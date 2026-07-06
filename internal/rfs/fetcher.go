@@ -1,0 +1,116 @@
+package rfs
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"time"
+
+	"golang.org/x/net/html"
+)
+
+type FetchCache struct {
+	ETag         string
+	LastModified string
+}
+
+type FetchStatus int
+
+const (
+	FetchModified FetchStatus = iota
+	FetchNotModified
+	FetchThrottled
+)
+
+type FetchResult struct {
+	Status     FetchStatus
+	Document   *html.Node
+	Cache      FetchCache
+	RetryAfter time.Duration
+}
+
+type HTTPFetcher struct {
+	client *http.Client
+}
+
+func NewHTTPFetcher(client *http.Client) HTTPFetcher {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	return HTTPFetcher{client: client}
+}
+
+func (f HTTPFetcher) Fetch(ctx context.Context, url string, cache FetchCache) (FetchResult, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	req.Header.Set("User-Agent", "rfs/0.1 (+https://github.com/ppowo/rfs)")
+	if cache.ETag != "" {
+		req.Header.Set("If-None-Match", cache.ETag)
+	}
+	if cache.LastModified != "" {
+		req.Header.Set("If-Modified-Since", cache.LastModified)
+	}
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return FetchResult{}, err
+	}
+	defer resp.Body.Close()
+
+	result := FetchResult{Cache: cache}
+	if etag := resp.Header.Get("ETag"); etag != "" {
+		result.Cache.ETag = etag
+	}
+	if lastModified := resp.Header.Get("Last-Modified"); lastModified != "" {
+		result.Cache.LastModified = lastModified
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		doc, err := parseHTML(resp.Body)
+		if err != nil {
+			return FetchResult{}, err
+		}
+		result.Status = FetchModified
+		result.Document = doc
+		return result, nil
+	case http.StatusNotModified:
+		result.Status = FetchNotModified
+		return result, nil
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		result.Status = FetchThrottled
+		result.RetryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		return result, nil
+	default:
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		return FetchResult{}, fmt.Errorf("fetch %s: unexpected status %s", url, resp.Status)
+	}
+}
+
+func parseHTML(r io.Reader) (*html.Node, error) {
+	return html.Parse(r)
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil {
+		if seconds < 0 {
+			return 0
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	when, err := http.ParseTime(value)
+	if err != nil {
+		return 0
+	}
+	if when.Before(now) {
+		return 0
+	}
+	return when.Sub(now)
+}

@@ -135,8 +135,9 @@ func (f *fakeFetcher) Fetch(ctx context.Context, url string, cache FetchCache) (
 }
 
 type fakeFlow struct {
-	items  []ExtractedItem
-	called bool
+	items   []ExtractedItem
+	called  bool
+	version int
 }
 
 func (f *fakeFlow) Extract(doc *html.Node) ([]ExtractedItem, error) {
@@ -144,10 +145,98 @@ func (f *fakeFlow) Extract(doc *html.Node) ([]ExtractedItem, error) {
 	return f.items, nil
 }
 
+// Version reports the fakeFlow's extraction version so tests can exercise the
+// version-mismatch invalidation path.
+func (f *fakeFlow) Version() int { return f.version }
+
 type fixedClock struct{ now time.Time }
 
 func (c fixedClock) Now() time.Time { return c.now }
 
+func TestPollerForcesUnconditionalFetchWhenFlowVersionAdvances(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenInMemorySQLiteStore()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	// The stored snapshot was derived by version 1; the running Flow is version 2.
+	if err := store.SaveFetchCache(ctx, "meltzer", FetchCache{ETag: `"v1"`, ExtractVersion: 1}); err != nil {
+		t.Fatalf("save fetch cache: %v", err)
+	}
+	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
+	fetcher := &fakeFetcher{result: FetchResult{
+		Status:   FetchModified,
+		Document: emptyDoc(t),
+		Cache:    FetchCache{ETag: `"v2"`},
+	}}
+	flow := &fakeFlow{
+		items:   []ExtractedItem{{GUID: "g", Title: "T", Link: "https://example.com", PubDate: &now}},
+		version: 2,
+	}
+	poller := Poller{Fetcher: fetcher, Store: store, Clock: fixedClock{now: now}}
+
+	result, err := poller.Poll(ctx, Source{ID: "meltzer", URL: "https://example.com", Flow: flow})
+	if err != nil {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+	if result.Status != PollUpdated {
+		t.Fatalf("expected PollUpdated, got %v", result.Status)
+	}
+	// A version mismatch must drop the stored conditional headers so the server
+	// is forced to return the full page (200) instead of a stale 304.
+	if fetcher.cache.ETag != "" || fetcher.cache.LastModified != "" {
+		t.Fatalf("expected unconditional fetch on version advance, got %#v", fetcher.cache)
+	}
+	cache, err := store.LoadFetchCache(ctx, "meltzer")
+	if err != nil {
+		t.Fatalf("load fetch cache: %v", err)
+	}
+	if cache.ETag != `"v2"` {
+		t.Fatalf("response ETag not persisted: %#v", cache)
+	}
+	if cache.ExtractVersion != 2 {
+		t.Fatalf("extract version not advanced to running Flow's version: %#v", cache)
+	}
+}
+
+func TestPollerKeepsConditionalFetchWhenFlowVersionMatches(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenInMemorySQLiteStore()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+	if err := store.SaveFetchCache(ctx, "meltzer", FetchCache{ETag: `"v1"`, ExtractVersion: 1}); err != nil {
+		t.Fatalf("save fetch cache: %v", err)
+	}
+	flow := &fakeFlow{version: 1}
+	fetcher := &fakeFetcher{result: FetchResult{Status: FetchNotModified, Cache: FetchCache{ETag: `"v1"`}}}
+	poller := Poller{Fetcher: fetcher, Store: store, Clock: fixedClock{now: time.Now()}}
+
+	result, err := poller.Poll(ctx, Source{ID: "meltzer", URL: "https://example.com", Flow: flow})
+	if err != nil {
+		t.Fatalf("Poll returned error: %v", err)
+	}
+	if result.Status != PollUnchanged {
+		t.Fatalf("expected PollUnchanged, got %v", result.Status)
+	}
+	if flow.called {
+		t.Fatal("Flow.Extract must not run when the page is unchanged and the version matches")
+	}
+	// Matching version keeps the cheap conditional fast-path: the stored ETag is
+	// sent and the 304 is honored.
+	if fetcher.cache.ETag != `"v1"` {
+		t.Fatalf("conditional headers dropped despite matching version: %#v", fetcher.cache)
+	}
+	cache, err := store.LoadFetchCache(ctx, "meltzer")
+	if err != nil {
+		t.Fatalf("load fetch cache: %v", err)
+	}
+	if cache.ExtractVersion != 1 {
+		t.Fatalf("extract version clobbered to 0 by a 304 with no version header: %#v", cache)
+	}
+}
 func emptyDoc(t *testing.T) *html.Node {
 	t.Helper()
 	doc, err := html.Parse(strings.NewReader(`<html><body></body></html>`))

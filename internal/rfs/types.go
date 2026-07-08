@@ -16,6 +16,13 @@ type SourceMeta struct {
 // Flow extracts source-specific items from a fetched HTML page.
 type Flow interface {
 	Extract(*html.Node) ([]ExtractedItem, error)
+
+	// Version is bumped whenever Extract's output can change for a fixed page.
+	// rfs persists the version that produced each stored snapshot and, on a
+	// mismatch, forces a full re-fetch+re-extraction rather than trusting an
+	// HTTP 304 (which only proves the page bytes are unchanged, not that the
+	// parser is). See docs/adr/0003-extract-version-invalidates-snapshot.md.
+	Version() int
 }
 
 // Source wires a hardcoded web page to the Flow and metadata used to serve it.

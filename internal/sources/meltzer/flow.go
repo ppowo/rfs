@@ -13,74 +13,122 @@ import (
 
 const PageURL = "https://en.wikipedia.org/wiki/List_of_professional_wrestling_matches_rated_5_or_more_stars_by_Dave_Meltzer"
 
+// targetDecade is the only decade section parsed from the Meltzer page.
+const targetDecade = "2020s"
+
+// ExtractVersion is the derivation version for the Meltzer Flow. Bump it
+// whenever Extract/textContent's output can change for a fixed page so rfs
+// forces a full re-derivation instead of trusting a stale HTTP 304.
+const ExtractVersion = 1
+
 type Flow struct{}
+
+// Version reports the Meltzer extraction version.
+func (Flow) Version() int { return ExtractVersion }
 
 func (Flow) Extract(doc *html.Node) ([]rfs.ExtractedItem, error) {
 	var items []rfs.ExtractedItem
 
-	for _, table := range findElements(doc, "table") {
-		rows := findElements(table, "tr")
-		if len(rows) < 2 {
-			continue
-		}
-
-		headers, columnCount := headerIndex(rows[0])
-		if !hasHeaders(headers, "date", "match", "promotion", "event", "rating") {
-			continue
-		}
-
-		spans := map[int]carriedCell{}
-		for _, row := range rows[1:] {
-			cells := childElements(row, "td")
-			if len(cells) == 0 {
-				continue
-			}
-			alignedCells := alignCells(cells, columnCount, spans)
-
-			cell := func(name string) string {
-				idx, ok := headers[name]
-				if !ok || idx >= len(alignedCells) || alignedCells[idx] == nil {
-					return ""
+	// Walk the document in order, remembering the most recent heading so each
+	// table can be attributed to the decade it appears under. Only the 2020s
+	// table is parsed; every other decade is skipped.
+	heading := ""
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		if n.Type == html.ElementNode {
+			switch n.Data {
+			case "h1", "h2", "h3", "h4", "h5", "h6":
+				heading = headingText(textContent(n))
+			case "table":
+				if isTargetDecade(heading) {
+					items = append(items, extractTable(n)...)
 				}
-				return textContent(alignedCells[idx])
+				return // never descend into tables
 			}
-
-			dateText := cell("date")
-			match := cell("match")
-			promotion := cell("promotion")
-			event := cell("event")
-			rating := cell("rating")
-			notes := cell("notes")
-
-			if match == "" || event == "" {
-				continue
-			}
-
-			var pubDate *time.Time
-			datePart := "no-date"
-			if dateText != "" {
-				datePart = slug(dateText)
-				parsed, err := parseMeltzerDate(dateText)
-				if err == nil {
-					pubDate = &parsed
-					datePart = parsed.Format("2006-01-02")
-				}
-			}
-
-			guid := "meltzer:" + datePart + ":" + slug(match) + ":" + slug(event)
-			description := strings.Join(nonEmpty([]string{promotion, starText(rating), notes}), " · ")
-
-			items = append(items, rfs.ExtractedItem{
-				GUID:        guid,
-				Title:       match + " — " + event,
-				Link:        PageURL,
-				Description: description,
-				PubDate:     pubDate,
-			})
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c)
 		}
 	}
+	walk(doc)
 
 	return items, nil
+}
+
+// extractTable parses a single decade table into extracted items.
+func extractTable(table *html.Node) []rfs.ExtractedItem {
+	rows := findElements(table, "tr")
+	if len(rows) < 2 {
+		return nil
+	}
+
+	headers, columnCount := headerIndex(rows[0])
+	if !hasHeaders(headers, "date", "match", "promotion", "event", "rating") {
+		return nil
+	}
+
+	spans := map[int]carriedCell{}
+	var items []rfs.ExtractedItem
+	for _, row := range rows[1:] {
+		cells := childElements(row, "td")
+		if len(cells) == 0 {
+			continue
+		}
+		alignedCells := alignCells(cells, columnCount, spans)
+
+		cell := func(name string) string {
+			idx, ok := headers[name]
+			if !ok || idx >= len(alignedCells) || alignedCells[idx] == nil {
+				return ""
+			}
+			return textContent(alignedCells[idx])
+		}
+
+		dateText := cell("date")
+		match := cell("match")
+		promotion := cell("promotion")
+		event := cell("event")
+		rating := cell("rating")
+		notes := cell("notes")
+
+		if match == "" || event == "" {
+			continue
+		}
+
+		var pubDate *time.Time
+		datePart := "no-date"
+		if dateText != "" {
+			datePart = slug(dateText)
+			parsed, err := parseMeltzerDate(dateText)
+			if err == nil {
+				pubDate = &parsed
+				datePart = parsed.Format("2006-01-02")
+			}
+		}
+
+		guid := "meltzer:" + datePart + ":" + slug(match) + ":" + slug(event)
+		description := strings.Join(nonEmpty([]string{promotion, starText(rating), notes}), " · ")
+
+		items = append(items, rfs.ExtractedItem{
+			GUID:        guid,
+			Title:       match + " — " + event,
+			Link:        PageURL,
+			Description: description,
+			PubDate:     pubDate,
+		})
+	}
+	return items
+}
+
+// headingText normalizes a heading's text for decade comparison.
+func headingText(raw string) string {
+	return strings.ToLower(strings.Join(strings.Fields(raw), " "))
+}
+
+// isTargetDecade reports whether heading is the 2020s decade. HasPrefix
+// tolerates legacy MediaWiki headings that append an "[edit]" section link.
+func isTargetDecade(heading string) bool {
+	return strings.HasPrefix(strings.TrimSpace(heading), targetDecade)
 }
 
 func headerIndex(row *html.Node) (map[string]int, int) {
@@ -232,7 +280,15 @@ func textContent(root *html.Node) string {
 		}
 	}
 	walk(root)
-	return strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+	// Parsoid emits each wikitext link as its own text node, so naively
+	// joining them leaves stray spaces next to commas and parentheses in
+	// tag-team names like "FTR ( Matt Jackson and Nick Jackson )". Join with
+	// Fields first to collapse runs of whitespace, then tidy the punctuation.
+	s := strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+	s = strings.ReplaceAll(s, " ,", ",")
+	s = strings.ReplaceAll(s, "( ", "(")
+	s = strings.ReplaceAll(s, " )", ")")
+	return s
 }
 
 func hasClass(n *html.Node, class string) bool {

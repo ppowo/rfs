@@ -57,13 +57,54 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS fetch_cache (
 			source_id TEXT PRIMARY KEY,
 			etag TEXT NOT NULL DEFAULT '',
-			last_modified TEXT NOT NULL DEFAULT ''
+			last_modified TEXT NOT NULL DEFAULT '',
+			extract_version INTEGER NOT NULL DEFAULT 0
 		)`,
 	}
 	for _, stmt := range statements {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return err
 		}
+	}
+	return s.migrate(ctx)
+}
+
+// migrate adds columns introduced after the initial schema to databases
+// created by older rfs builds. Each step is idempotent.
+func (s *SQLiteStore) migrate(ctx context.Context) error {
+	return s.addColumnIfMissing(ctx, "fetch_cache", "extract_version", "INTEGER NOT NULL DEFAULT 0")
+}
+
+// addColumnIfMissing adds column to table with the given SQLite definition when
+// it is not already present. table and column are internal constants, not user
+// input, so interpolating them into the pragma/ALTER is safe.
+func (s *SQLiteStore) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			colType string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if name == column {
+			return nil // already present
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)); err != nil {
+		return fmt.Errorf("add %s.%s: %w", table, column, err)
 	}
 	return nil
 }
@@ -131,14 +172,14 @@ func (s *SQLiteStore) FirstSeen(ctx context.Context, sourceID, guid string, disc
 }
 
 func (s *SQLiteStore) SaveFetchCache(ctx context.Context, sourceID string, cache FetchCache) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO fetch_cache (source_id, etag, last_modified) VALUES (?, ?, ?)
-		ON CONFLICT(source_id) DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified`, sourceID, cache.ETag, cache.LastModified)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO fetch_cache (source_id, etag, last_modified, extract_version) VALUES (?, ?, ?, ?)
+		ON CONFLICT(source_id) DO UPDATE SET etag = excluded.etag, last_modified = excluded.last_modified, extract_version = excluded.extract_version`, sourceID, cache.ETag, cache.LastModified, cache.ExtractVersion)
 	return err
 }
 
 func (s *SQLiteStore) LoadFetchCache(ctx context.Context, sourceID string) (FetchCache, error) {
 	var cache FetchCache
-	err := s.db.QueryRowContext(ctx, `SELECT etag, last_modified FROM fetch_cache WHERE source_id = ?`, sourceID).Scan(&cache.ETag, &cache.LastModified)
+	err := s.db.QueryRowContext(ctx, `SELECT etag, last_modified, extract_version FROM fetch_cache WHERE source_id = ?`, sourceID).Scan(&cache.ETag, &cache.LastModified, &cache.ExtractVersion)
 	if err == sql.ErrNoRows {
 		return FetchCache{}, nil
 	}

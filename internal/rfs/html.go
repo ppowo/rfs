@@ -91,8 +91,8 @@ func RenderHTMLIndex(sources []Source) ([]byte, error) {
 // RenderHTMLFeed renders a single source's items as an HTML page.
 func RenderHTMLFeed(sourceID string, meta SourceMeta, items []Item) ([]byte, error) {
 	view := feedView{
-		ID:   sourceID,
-		Meta: meta,
+		ID:    sourceID,
+		Meta:  meta,
 		Items: make([]feedItemView, 0, len(items)),
 	}
 	for _, item := range items {

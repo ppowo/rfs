@@ -14,6 +14,12 @@ import (
 type FetchCache struct {
 	ETag         string
 	LastModified string
+
+	// ExtractVersion is the derivation version that produced the stored
+	// snapshot for this source, NOT an HTTP validator. The fetcher ignores it;
+	// the poller sets it to the running Flow's version on every save so a 304
+	// (which echoes no useful version) cannot clobber it back to 0.
+	ExtractVersion int
 }
 
 type FetchStatus int

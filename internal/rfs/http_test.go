@@ -77,7 +77,7 @@ func TestHTTPHandlerServesIndexPage(t *testing.T) {
 	defer store.Close()
 
 	handler := NewHTTPHandler(store, []Source{{
-		ID: "meltzer",
+		ID:   "meltzer",
 		Meta: SourceMeta{Title: "Meltzer 5-star matches", Description: "Rated matches."},
 	}})
 
@@ -121,7 +121,7 @@ func TestHTTPHandlerServesFeedAsHTML(t *testing.T) {
 	}
 
 	handler := NewHTTPHandler(store, []Source{{
-		ID: "meltzer",
+		ID:   "meltzer",
 		Meta: SourceMeta{Title: "Meltzer 5-star matches", Link: "https://example.com/meltzer"},
 	}})
 

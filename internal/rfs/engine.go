@@ -58,14 +58,30 @@ func (p Poller) Poll(ctx context.Context, source Source) (PollResult, error) {
 		return PollResult{}, err
 	}
 
-	fetchResult, err := p.Fetcher.Fetch(ctx, source.URL, cache)
+	// A snapshot is derived data: a function of (page HTML, extraction code).
+	// An HTTP 304 only proves the page bytes are unchanged — not that the
+	// parser is. When the running Flow's version differs from the version that
+	// produced the stored snapshot, drop the conditional headers for this one
+	// fetch so the server returns the full page and Extract re-runs against
+	// it, overwriting the stale snapshot below.
+	requestCache := cache
+	if source.Flow.Version() != cache.ExtractVersion {
+		requestCache = FetchCache{}
+	}
+
+	fetchResult, err := p.Fetcher.Fetch(ctx, source.URL, requestCache)
 	if err != nil {
 		return PollResult{}, err
 	}
 
+	// A 304 re-derives nothing, so preserve the stored version (it still
+	// describes the snapshot on disk). Only a real re-derivation advances it.
+	savedCache := fetchResult.Cache
+	savedCache.ExtractVersion = cache.ExtractVersion
+
 	switch fetchResult.Status {
 	case FetchNotModified:
-		if err := p.Store.SaveFetchCache(ctx, source.ID, fetchResult.Cache); err != nil {
+		if err := p.Store.SaveFetchCache(ctx, source.ID, savedCache); err != nil {
 			return PollResult{}, err
 		}
 		return PollResult{Status: PollUnchanged}, nil
@@ -116,7 +132,10 @@ func (p Poller) Poll(ctx context.Context, source Source) (PollResult, error) {
 	if err := p.Store.SaveSnapshot(ctx, source.ID, items); err != nil {
 		return PollResult{}, err
 	}
-	if err := p.Store.SaveFetchCache(ctx, source.ID, fetchResult.Cache); err != nil {
+	// The snapshot was just re-derived with the running Flow's code, so advance
+	// the stored version — future polls can trust a 304 until this changes again.
+	savedCache.ExtractVersion = source.Flow.Version()
+	if err := p.Store.SaveFetchCache(ctx, source.ID, savedCache); err != nil {
 		return PollResult{}, err
 	}
 	return PollResult{Status: PollUpdated}, nil
@@ -134,3 +153,7 @@ var _ Flow = flowFunc(nil)
 type flowFunc func(*html.Node) ([]ExtractedItem, error)
 
 func (f flowFunc) Extract(doc *html.Node) ([]ExtractedItem, error) { return f(doc) }
+
+// Version is 0 for ad-hoc flowFuncs, so they never trigger a version-driven
+// re-derive. Named Flows declare their own version (see meltzer.Flow).
+func (flowFunc) Version() int { return 0 }

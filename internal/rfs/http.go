@@ -11,8 +11,9 @@ type SnapshotReader interface {
 }
 
 type HTTPHandler struct {
-	store   SnapshotReader
-	sources map[string]Source
+	store          SnapshotReader
+	sources        map[string]Source
+	orderedSources []Source
 }
 
 func NewHTTPHandler(store SnapshotReader, sources []Source) http.Handler {
@@ -20,7 +21,7 @@ func NewHTTPHandler(store SnapshotReader, sources []Source) http.Handler {
 	for _, source := range sources {
 		byID[source.ID] = source
 	}
-	return HTTPHandler{store: store, sources: byID}
+	return HTTPHandler{store: store, sources: byID, orderedSources: sources}
 }
 
 func (h HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +31,12 @@ func (h HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sourceID, ok := sourceIDFromFeedPath(r.URL.Path)
+	if r.URL.Path == "/" {
+		h.serveIndex(w, r)
+		return
+	}
+
+	sourceID, format, ok := splitFeedPath(r.URL.Path)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -46,24 +52,57 @@ func (h HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load feed snapshot", http.StatusInternalServerError)
 		return
 	}
-	body, err := RenderRSS(source.Meta, items)
+
+	switch format {
+	case "xml":
+		body, err := RenderRSS(source.Meta, items)
+		writeRendered(w, "application/rss+xml; charset=utf-8", body, err)
+	case "html":
+		body, err := RenderHTMLFeed(sourceID, source.Meta, items)
+		writeRendered(w, "text/html; charset=utf-8", body, err)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// writeRendered writes a rendered body with the given content type, or replies
+// with a 500 if rendering failed. It deduplicates the render-and-write shape
+// shared by the xml and html feed formats.
+func writeRendered(w http.ResponseWriter, contentType string, body []byte, err error) {
 	if err != nil {
 		http.Error(w, "render feed", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	w.Header().Set("Content-Type", contentType)
 	_, _ = w.Write(body)
 }
 
-func sourceIDFromFeedPath(path string) (string, bool) {
+func (h HTTPHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
+	body, err := RenderHTMLIndex(h.orderedSources)
+	if err != nil {
+		http.Error(w, "render index", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(body)
+}
+
+// splitFeedPath turns "/feeds/<id>.<ext>" into (id, ext, true). It rejects
+// empty ids, ids containing slashes, and any path that is not under /feeds/.
+func splitFeedPath(path string) (string, string, bool) {
 	const prefix = "/feeds/"
-	const suffix = ".xml"
-	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) {
-		return "", false
+	if !strings.HasPrefix(path, prefix) {
+		return "", "", false
 	}
-	sourceID := strings.TrimSuffix(strings.TrimPrefix(path, prefix), suffix)
-	if sourceID == "" || strings.Contains(sourceID, "/") {
-		return "", false
+	rest := strings.TrimPrefix(path, prefix)
+	dot := strings.LastIndex(rest, ".")
+	if dot <= 0 || dot == len(rest)-1 {
+		return "", "", false
 	}
-	return sourceID, true
+	sourceID := rest[:dot]
+	format := rest[dot+1:]
+	if strings.Contains(sourceID, "/") {
+		return "", "", false
+	}
+	return sourceID, format, true
 }

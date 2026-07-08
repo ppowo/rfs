@@ -10,7 +10,9 @@ go run ./cmd/rfs
 
 Feeds are served at:
 
-- `http://localhost:8080/feeds/meltzer-5-star-matches.xml`
+- `/` — HTML index listing every source
+- `/feeds/meltzer-5-star-matches.xml` — RSS 2.0 feed
+- `/feeds/meltzer-5-star-matches.html` — HTML view of the feed
 
 State is stored in a SQLite database under the OS user cache directory by default:
 

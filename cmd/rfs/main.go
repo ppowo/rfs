@@ -141,9 +141,11 @@ func sourceDomain(source rfs.Source) (string, error) {
 
 func logFeeds(addr string, sources []rfs.Source) {
 	baseURL := feedBaseURL(addr)
+	log.Printf("index:  %s/", baseURL)
 	log.Printf("feeds:")
 	for _, source := range sources {
-		log.Printf("  %s %s/feeds/%s.xml", source.ID, baseURL, source.ID)
+		log.Printf("  %s\n    %s/feeds/%s.xml\n    %s/feeds/%s.html",
+			source.ID, baseURL, source.ID, baseURL, source.ID)
 	}
 }
 

@@ -54,7 +54,7 @@ func main() {
 	selfUpdate := flag.Bool("self-update", true, "enable self-update checks for non-dev builds")
 	flag.Parse()
 	if *showVersion {
-		fmt.Println(versionString())
+		fmt.Println(buildInfo.String())
 		return
 	}
 	if *interval <= 0 {
@@ -64,7 +64,7 @@ func main() {
 		log.Fatalf("domain-spacing must not be negative, got %s", *domainSpacing)
 	}
 
-	log.Print(versionString())
+	log.Print(buildInfo.String())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -174,7 +174,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    *addr,
-		Handler: rfs.NewHTTPHandler(store, registeredSources),
+		Handler: rfs.NewHTTPHandler(store, registeredSources, buildInfo),
 	}
 
 	go func() {

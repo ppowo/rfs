@@ -8,6 +8,16 @@ import (
 	"time"
 )
 
+var testBuildInfo = BuildInfo{
+	Version:    "test-1.2.3",
+	Commit:     "abc1234",
+	CommitDate: "2026-07-09",
+	BuildDate:  "2026-07-09",
+	GoVersion:  "go1.24.5",
+	GOOS:       "linux",
+	GOARCH:     "amd64",
+}
+
 func TestHTTPHandlerServesStoredSnapshotAsRSS(t *testing.T) {
 	store, err := OpenInMemorySQLiteStore()
 	if err != nil {
@@ -33,7 +43,7 @@ func TestHTTPHandlerServesStoredSnapshotAsRSS(t *testing.T) {
 			Description: "Matches rated 5 or more stars by Dave Meltzer.",
 			Link:        "https://example.com/meltzer",
 		},
-	}})
+	}}, testBuildInfo)
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/feeds/meltzer.xml", nil))
@@ -60,7 +70,7 @@ func TestHTTPHandlerReturns404ForUnknownFeed(t *testing.T) {
 	}
 	defer store.Close()
 
-	handler := NewHTTPHandler(store, []Source{{ID: "meltzer", Meta: SourceMeta{Title: "Meltzer"}}})
+	handler := NewHTTPHandler(store, []Source{{ID: "meltzer", Meta: SourceMeta{Title: "Meltzer"}}}, testBuildInfo)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/feeds/unknown.xml", nil))
 
@@ -79,7 +89,7 @@ func TestHTTPHandlerServesIndexPage(t *testing.T) {
 	handler := NewHTTPHandler(store, []Source{{
 		ID:   "meltzer",
 		Meta: SourceMeta{Title: "Meltzer 5-star matches", Description: "Rated matches."},
-	}})
+	}}, testBuildInfo)
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -99,6 +109,12 @@ func TestHTTPHandlerServesIndexPage(t *testing.T) {
 	}
 	if !strings.Contains(body, `href="/feeds/meltzer.xml"`) {
 		t.Fatalf("missing link to RSS feed:\n%s", body)
+	}
+	if !strings.Contains(body, "test-1.2.3") {
+		t.Fatalf("missing build info in index:\n%s", body)
+	}
+	if !strings.Contains(body, `<footer class="version">`) {
+		t.Fatalf("missing version footer:\n%s", body)
 	}
 }
 
@@ -123,7 +139,7 @@ func TestHTTPHandlerServesFeedAsHTML(t *testing.T) {
 	handler := NewHTTPHandler(store, []Source{{
 		ID:   "meltzer",
 		Meta: SourceMeta{Title: "Meltzer 5-star matches", Link: "https://example.com/meltzer"},
-	}})
+	}}, testBuildInfo)
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/feeds/meltzer.html", nil))
@@ -144,6 +160,12 @@ func TestHTTPHandlerServesFeedAsHTML(t *testing.T) {
 	if !strings.Contains(body, "CWF · 5 stars") {
 		t.Fatalf("missing description:\n%s", body)
 	}
+	if !strings.Contains(body, "test-1.2.3") {
+		t.Fatalf("missing build info in feed:\n%s", body)
+	}
+	if !strings.Contains(body, `<footer class="version">`) {
+		t.Fatalf("missing version footer:\n%s", body)
+	}
 }
 
 func TestHTTPHandlerReturns404ForUnknownFeedFormat(t *testing.T) {
@@ -156,7 +178,7 @@ func TestHTTPHandlerReturns404ForUnknownFeedFormat(t *testing.T) {
 	handler := NewHTTPHandler(store, []Source{{
 		ID:   "meltzer",
 		Meta: SourceMeta{Title: "Meltzer 5-star matches"},
-	}})
+	}}, testBuildInfo)
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/feeds/meltzer.json", nil))

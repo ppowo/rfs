@@ -18,6 +18,7 @@ li:last-child { border-bottom: none; }
 .item-title { font-weight: 600; }
 .item-date { color: #666; font-size: 0.85rem; }
 .rss { font-size: 0.8rem; }
+footer.version { color: #999; font-size: 0.8rem; margin-top: 2rem; }
 `
 
 const indexTemplate = `<!DOCTYPE html>
@@ -34,15 +35,15 @@ const indexTemplate = `<!DOCTYPE html>
 <p class="meta">Feeds served by rfs.</p>
 </header>
 <ul>
-{{ range . }}<li>
+{{ range .Sources }}<li>
 <a class="item-title" href="/feeds/{{ .ID }}.html">{{ .Meta.Title }}</a>
 {{ if .Meta.Description }}<p class="meta">{{ .Meta.Description }}</p>{{ end }}
 <a class="rss" href="/feeds/{{ .ID }}.xml">RSS feed</a>
 </li>
 {{ end }}</ul>
+<footer class="version">{{ .Build }}</footer>
 </body>
-</html>
-`
+</html>`
 
 const feedTemplate = `<!DOCTYPE html>
 <html lang="en">
@@ -66,9 +67,9 @@ const feedTemplate = `<!DOCTYPE html>
 </li>
 {{ else }}<li class="meta">No items yet.</li>
 {{ end }}</ul>
+<footer class="version">{{ .Build }}</footer>
 </body>
-</html>
-`
+</html>`
 
 type feedItemView struct {
 	Title       string
@@ -81,19 +82,28 @@ type feedView struct {
 	ID    string
 	Meta  SourceMeta
 	Items []feedItemView
+	Build BuildInfo
 }
 
-// RenderHTMLIndex renders an HTML listing of all sources.
-func RenderHTMLIndex(sources []Source) ([]byte, error) {
-	return renderTemplate("index", indexTemplate, sources)
+type indexView struct {
+	Sources []Source
+	Build   BuildInfo
 }
 
-// RenderHTMLFeed renders a single source's items as an HTML page.
-func RenderHTMLFeed(sourceID string, meta SourceMeta, items []Item) ([]byte, error) {
+// RenderHTMLIndex renders an HTML listing of all sources, with build info in
+// the footer.
+func RenderHTMLIndex(sources []Source, build BuildInfo) ([]byte, error) {
+	return renderTemplate("index", indexTemplate, indexView{Sources: sources, Build: build})
+}
+
+// RenderHTMLFeed renders a single source's items as an HTML page, with build
+// info in the footer.
+func RenderHTMLFeed(sourceID string, meta SourceMeta, items []Item, build BuildInfo) ([]byte, error) {
 	view := feedView{
 		ID:    sourceID,
 		Meta:  meta,
 		Items: make([]feedItemView, 0, len(items)),
+		Build: build,
 	}
 	for _, item := range items {
 		view.Items = append(view.Items, feedItemView{

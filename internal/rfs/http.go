@@ -14,14 +14,15 @@ type HTTPHandler struct {
 	store          SnapshotReader
 	sources        map[string]Source
 	orderedSources []Source
+	build          BuildInfo
 }
 
-func NewHTTPHandler(store SnapshotReader, sources []Source) http.Handler {
+func NewHTTPHandler(store SnapshotReader, sources []Source, build BuildInfo) http.Handler {
 	byID := make(map[string]Source, len(sources))
 	for _, source := range sources {
 		byID[source.ID] = source
 	}
-	return HTTPHandler{store: store, sources: byID, orderedSources: sources}
+	return HTTPHandler{store: store, sources: byID, orderedSources: sources, build: build}
 }
 
 func (h HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +59,7 @@ func (h HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, err := RenderRSS(source.Meta, items)
 		writeRendered(w, "application/rss+xml; charset=utf-8", body, err)
 	case "html":
-		body, err := RenderHTMLFeed(sourceID, source.Meta, items)
+		body, err := RenderHTMLFeed(sourceID, source.Meta, items, h.build)
 		writeRendered(w, "text/html; charset=utf-8", body, err)
 	default:
 		http.NotFound(w, r)
@@ -78,7 +79,7 @@ func writeRendered(w http.ResponseWriter, contentType string, body []byte, err e
 }
 
 func (h HTTPHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
-	body, err := RenderHTMLIndex(h.orderedSources)
+	body, err := RenderHTMLIndex(h.orderedSources, h.build)
 	if err != nil {
 		http.Error(w, "render index", http.StatusInternalServerError)
 		return

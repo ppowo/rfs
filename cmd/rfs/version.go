@@ -1,6 +1,10 @@
 package main
 
-import "runtime"
+import (
+	"runtime"
+
+	"github.com/ppowo/rfs/internal/rfs"
+)
 
 // Build metadata for the running rfs binary. version/commit/commitDate/buildDate
 // are injected at release time via -ldflags (see .goreleaser.yaml); the go
@@ -14,11 +18,16 @@ var (
 	buildDate  = "unknown"
 )
 
-// versionString returns a single verbose line describing this build, used by
-// the -version flag and the startup log so auto-incremented builds can be told
-// apart on the server. The self-update gate uses only `version` (the leading
-// timestamp), not this whole string.
-func versionString() string {
-	return "rfs " + version + " (commit " + commit + ", committed " + commitDate +
-		", built " + buildDate + ", " + runtime.Version() + " " + runtime.GOOS + "/" + runtime.GOARCH + ")"
+// buildInfo is the single description of this build: the -version flag, the
+// startup log, and the HTML page footer all render buildInfo.String(), so an
+// operator sees the same identifier in every place. The self-update gate
+// reads the bare `version` var above (the timestamp it compares), not this.
+var buildInfo = rfs.BuildInfo{
+	Version:    version,
+	Commit:     commit,
+	CommitDate: commitDate,
+	BuildDate:  buildDate,
+	GoVersion:  runtime.Version(),
+	GOOS:       runtime.GOOS,
+	GOARCH:     runtime.GOARCH,
 }

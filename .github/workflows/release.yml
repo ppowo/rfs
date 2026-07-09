@@ -97,3 +97,47 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keep only the 3 newest releases. Each manual run publishes a new
+      # timestamp-tagged release, so the list grows without bound; this prunes
+      # everything older than the 3rd-newest and deletes the underlying git
+      # tag so refs don't accumulate. Uses the REST API directly (curl + jq are
+      # preinstalled on the runner) rather than the gh CLI. Sorts by created_at,
+      # not the tag string — the non-zero-padded timestamp tags (e.g.
+      # 2026.709.200111) do not sort lexicographically in chronological order.
+      - name: Prune old releases (keep last 3)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          OWNER_REPO="${{ github.repository }}"
+          API="https://api.github.com/repos/$OWNER_REPO"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          ACCEPT="Accept: application/vnd.github+json"
+
+          # Paginate the full release list (cap 1000; steady state is ~3, so
+          # this only matters on a large pre-existing backlog).
+          : > /tmp/releases.jsonl
+          page=1
+          while [ "$page" -le 10 ]; do
+            body=$(curl -fsSL -H "$AUTH" -H "$ACCEPT" \
+              "$API/releases?per_page=100&page=$page")
+            count=$(printf '%s' "$body" | jq 'length')
+            [ "$count" -eq 0 ] && break
+            printf '%s' "$body" | jq -c '.[] | {id, tag_name, created_at}' >> /tmp/releases.jsonl
+            [ "$count" -lt 100 ] && break
+            page=$((page + 1))
+          done
+
+          # Newest 3 retained; delete everything older, then drop their tags.
+          # Best-effort: a failed delete warns but does not fail the release.
+          jq -rs 'sort_by(.created_at) | reverse | .[3:][] | "\(.id) \(.tag_name)"' \
+            /tmp/releases.jsonl \
+            | while read -r id tag; do
+                [ -n "$tag" ] || continue
+                echo "Deleting release $tag (id $id)"
+                curl -fsSL -X DELETE -H "$AUTH" -H "$ACCEPT" "$API/releases/$id" \
+                  || { echo "::warning::failed to delete release $tag"; continue; }
+                curl -fsSL -X DELETE -H "$AUTH" -H "$ACCEPT" "$API/git/refs/tags/$tag" \
+                  || echo "  (tag $tag already absent or failed to delete)"
+              done

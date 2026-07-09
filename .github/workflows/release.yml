@@ -1,9 +1,11 @@
 name: release
 
 # Manual release: Actions tab -> release workflow -> Run workflow -> main.
-# Each run creates a git tag named with the build time (UTC YYYY.MM.DD.HHMMSS)
-# and publishes a GitHub Release for it, versioned by that timestamp — so a
-# newer release is always a later timestamp. Self-update compares those.
+# Each run creates a git tag named with the build time, encoded as a
+# semver-shaped timestamp (UTC YYYY.MD.HMS: MD = month·100+day, HMS =
+# HH·10000+MM·100+SS, none zero-padded) so GoReleaser accepts it, and publishes
+# a GitHub Release versioned by that timestamp — so a newer release is always
+# a later timestamp. Self-update compares those field-by-field.
 on:
   workflow_dispatch:
 
@@ -25,12 +27,33 @@ jobs:
       - name: Compute build version
         id: ver
         run: |
-          # Version is the build run time in UTC, formatted YYYY.MM.DD.HHMMSS.
-          # Using the run time (not commit time) means the version reflects
-          # when you shipped, and is strictly newer than any prior release.
-          VERSION="$(date -u +%Y.%m.%d.%H%M%S)"
+          # Version is the build run time in UTC, encoded as a semver-shaped
+          # tag YYYY.MD.HMS (MAJOR.MINOR.PATCH): MD = month·100+day and
+          # HMS = HH·10000+MM·100+SS, neither zero-padded, so the tag is valid
+          # semver (GoReleaser requires it — see
+          # https://goreleaser.com/resources/limitations/semver) while staying
+          # a strictly-increasing, dot-separated timestamp the self-update gate
+          # compares field-by-field (per ADR 0004). Ex: 2026-07-09 20:01:11 ->
+          # 2026.709.200111. Using the run time (not commit time) means the
+          # version reflects when you shipped and is newer than any prior release.
+          read -r Y Mo D H Mi S <<<"$(date -u +'%Y %m %d %H %M %S')"
+          MD=$((10#$Mo * 100 + 10#$D))
+          HMS=$((10#$H * 10000 + 10#$Mi * 100 + 10#$S))
+          VERSION="$Y.$MD.$HMS"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Publishing version $VERSION"
+
+      # Guard: refuse to release if the computed version is not valid semver
+      # (MAJOR.MINOR.PATCH, no leading zeros). GoReleaser rejects anything else
+      # at "parsing tag"; catching it here fails fast with a clear message
+      # instead of pushing an orphan tag and failing later in goreleaser.
+      - name: Validate version is semver
+        run: |
+          v="${{ steps.ver.outputs.version }}"
+          if ! printf '%s' "$v" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::Version '$v' is not valid semver MAJOR.MINOR.PATCH (no leading zeros). GoReleaser requires semver tags; see https://goreleaser.com/resources/limitations/semver"
+            exit 1
+          fi
 
       # Guard: refuse to release if main is dirty or ahead of its remote
       # tracking branch — the workflow only ever releases what is actually

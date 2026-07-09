@@ -35,7 +35,7 @@ type Release struct {
 }
 
 // isNewerVersion reports whether latest is a newer release than current.
-// Versions are UTC build timestamps (YYYY.MM.DD.HHMMSS, per the release
+// Versions are UTC build timestamps (semver-shaped YYYY.MD.HMS, per the release
 // workflow), compared field-by-field as numbers left to right — so a later
 // timestamp is always newer. A leading "v" is tolerated but stripped (unused
 // under time-based versioning; kept for robustness). The "dev" local-build

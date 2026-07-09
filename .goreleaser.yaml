@@ -20,7 +20,7 @@ builds:
       - amd64
       - arm64
     # Build metadata injected into cmd/rfs/version.go via -ldflags -X.
-    # version is the release timestamp (YYYY.MM.DD.HHMMSS) the self-update gate
+    # version is the release timestamp (semver-shaped YYYY.MD.HMS) the self-update gate
     # compares; commit/commitDate/buildDate are the verbose build info printed
     # by `rfs -version`. Go version, OS, and arch come from the runtime, so
     # they are not injected here.

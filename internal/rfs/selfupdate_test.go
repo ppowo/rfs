@@ -32,12 +32,17 @@ func TestIsNewerVersion(t *testing.T) {
 		{"normalize leading v on current", "v0.1.0", "0.1.2", true},
 		{"dev is always older", "dev", "0.0.1", true},
 		{"dev vs dev is not newer", "dev", "dev", false},
-		// Time-based versions (YYYY.MM.DD.HHMMSS): a later timestamp is newer.
-		{"time-based newer minute", "2026.07.09.214200", "2026.07.09.214300", true},
-		{"time-based newer day", "2026.07.08.120000", "2026.07.09.214200", true},
-		{"time-based older is not newer", "2026.07.09.214300", "2026.07.09.214200", false},
-		{"time-based equal is not newer", "2026.07.09.214230", "2026.07.09.214230", false},
-		{"dev older than time-based", "dev", "2026.07.09.214200", true},
+		// Time-based versions are semver-shaped timestamps (YYYY.MD.HMS per the
+		// release workflow, where MD = month·100+day and HMS = HH·10000+MM·100+SS):
+		// a later timestamp is newer, compared field-by-field as numbers.
+		{"time-based newer second", "2026.709.200111", "2026.709.200112", true},
+		{"time-based newer minute", "2026.709.200111", "2026.709.201234", true},
+		{"time-based newer day", "2026.708.120000", "2026.709.214200", true},
+		{"time-based newer month", "2026.731.235959", "2026.801.000000", true},
+		{"time-based newer year", "2026.1231.235959", "2027.101.000000", true},
+		{"time-based older is not newer", "2026.709.214300", "2026.709.200111", false},
+		{"time-based equal is not newer", "2026.709.200111", "2026.709.200111", false},
+		{"dev older than time-based", "dev", "2026.709.200111", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

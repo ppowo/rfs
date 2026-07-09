@@ -32,6 +32,12 @@ func TestIsNewerVersion(t *testing.T) {
 		{"normalize leading v on current", "v0.1.0", "0.1.2", true},
 		{"dev is always older", "dev", "0.0.1", true},
 		{"dev vs dev is not newer", "dev", "dev", false},
+		// Time-based versions (YYYY.MM.DD.HHMMSS): a later timestamp is newer.
+		{"time-based newer minute", "2026.07.09.214200", "2026.07.09.214300", true},
+		{"time-based newer day", "2026.07.08.120000", "2026.07.09.214200", true},
+		{"time-based older is not newer", "2026.07.09.214300", "2026.07.09.214200", false},
+		{"time-based equal is not newer", "2026.07.09.214230", "2026.07.09.214230", false},
+		{"dev older than time-based", "dev", "2026.07.09.214200", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

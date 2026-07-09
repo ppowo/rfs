@@ -34,11 +34,13 @@ type Release struct {
 	Assets  []Asset
 }
 
-// isNewerVersion reports whether latest is a newer release than current. It
-// normalizes a leading "v" (goreleaser bakes the version without it; GitHub
-// tag_name carries it), compares the major.minor.patch tuple numerically, and
-// treats the "dev" local-build sentinel as older than any real release so a
-// `go run`/`go install` build updates on the first poll.
+// isNewerVersion reports whether latest is a newer release than current.
+// Versions are UTC build timestamps (YYYY.MM.DD.HHMMSS, per the release
+// workflow), compared field-by-field as numbers left to right — so a later
+// timestamp is always newer. A leading "v" is tolerated but stripped (unused
+// under time-based versioning; kept for robustness). The "dev" local-build
+// sentinel is older than any real release so a `go run`/`go install` build
+// updates on the first poll.
 func isNewerVersion(current, latest string) bool {
 	current = strings.TrimPrefix(current, "v")
 	latest = strings.TrimPrefix(latest, "v")

@@ -26,13 +26,20 @@ func main() {
 	interval := flag.Duration("interval", time.Hour, "global source polling interval")
 	domainSpacing := flag.Duration("domain-spacing", 10*time.Second, "minimum spacing between requests to the same domain")
 	dbPath := flag.String("db", "", "SQLite database path; defaults to the OS user cache dir, or use :memory:")
+	showVersion := flag.Bool("version", false, "print build version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(versionString())
+		return
+	}
 	if *interval <= 0 {
 		log.Fatalf("interval must be positive, got %s", *interval)
 	}
 	if *domainSpacing < 0 {
 		log.Fatalf("domain-spacing must not be negative, got %s", *domainSpacing)
 	}
+
+	log.Print(versionString())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

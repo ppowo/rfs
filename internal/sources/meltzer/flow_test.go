@@ -129,15 +129,11 @@ func TestFlowIgnoresOtherDecadeTables(t *testing.T) {
 }
 
 // TestFlowParsesEvery2020sFixtureRow verifies the real 2020s section from
-// Wikipedia parses end to end with no dropped rows. It self-skips while
-// testdata/2020s.html is still the placeholder.
+// Wikipedia (testdata/2020s.html) parses end to end with no dropped rows.
 func TestFlowParsesEvery2020sFixtureRow(t *testing.T) {
 	raw, err := os.ReadFile("testdata/2020s.html")
 	if err != nil {
 		t.Fatalf("read testdata/2020s.html: %v", err)
-	}
-	if !strings.Contains(string(raw), "<table") {
-		t.Skip("testdata/2020s.html is a placeholder — paste the real 2020s section HTML to enable this test")
 	}
 	doc := parseHTML(t, string(raw))
 

@@ -1,0 +1,40 @@
+version: 2
+
+# rfs self-update (ADR 0004) downloads and verifies the exact artifacts this
+# config produces: archives named rfs_<version>_<os>_<arch>.tar.gz and a
+# sha256 checksums.txt listing them. Keep these names stable — the self-update
+# tick parses checksums.txt and selects the archive matching runtime.GOOS /
+# runtime.GOARCH.
+
+builds:
+  - id: rfs
+    main: ./cmd/rfs
+    binary: rfs
+    # modernc.org/sqlite is pure Go, so CGO_ENABLED=0 yields static,
+    # portable binaries that run on any Linux without a C toolchain.
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    # main.version (cmd/rfs/version.go) is the running build's version; the
+    # self-update tick compares it to releases/latest to decide whether to
+    # update. {{ .Version }} is the git tag without its leading "v".
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  # Published (not draft) so the GitHub releases API lists it and the
+  # self-update tick can download assets. Tag with v* to trigger the workflow.
+  draft: false

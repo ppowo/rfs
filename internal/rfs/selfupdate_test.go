@@ -216,12 +216,15 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	swapper := &fakeSwapper{}
 	u := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: downloader, Swapper: swapper}
 
-	applied, err := u.Check(context.Background())
+	result, err := u.Check(context.Background())
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if !applied {
+	if !result.Applied {
 		t.Fatal("expected an update to be applied")
+	}
+	if result.Current != "0.1.0" || result.Latest != "0.2.0" {
+		t.Fatalf("result = %+v, want current 0.1.0 latest 0.2.0", result)
 	}
 	if !bytes.Equal(swapper.got, binary) {
 		t.Fatalf("swapper got %q, want the extracted binary %q", swapper.got, binary)
@@ -231,12 +234,22 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	downloader2 := &fakeDownloader{byURL: downloader.byURL}
 	swapper2 := &fakeSwapper{}
 	u2 := Updater{Current: "0.2.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: downloader2, Swapper: swapper2}
-	applied2, err := u2.Check(context.Background())
-	if err != nil || applied2 {
-		t.Fatalf("equal version: applied=%v err=%v", applied2, err)
+	result2, err := u2.Check(context.Background())
+	if err != nil || result2.Applied {
+		t.Fatalf("equal version: result=%+v err=%v", result2, err)
+	}
+	if result2.Current != "0.2.0" || result2.Latest != "0.2.0" {
+		t.Fatalf("equal version result = %+v, want current/latest 0.2.0", result2)
 	}
 	if len(downloader2.calls) != 0 || swapper2.got != nil {
 		t.Fatal("equal version downloaded or swapped")
+	}
+
+	// No release yet: the check reports the current version and applies nothing.
+	uNoRelease := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{}, Downloader: &fakeDownloader{}, Swapper: &fakeSwapper{}}
+	resultNoRelease, err := uNoRelease.Check(context.Background())
+	if err != nil || resultNoRelease.Applied || resultNoRelease.Latest != "" || resultNoRelease.Current != "0.1.0" {
+		t.Fatalf("no release: result=%+v err=%v", resultNoRelease, err)
 	}
 
 	// Tampered archive: checksum must fail and the swapper must NOT be called.
@@ -245,9 +258,9 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	badDownloader := &fakeDownloader{byURL: map[string][]byte{"arch": tampered, "chk": []byte(checksums)}}
 	badSwapper := &fakeSwapper{}
 	u3 := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: badDownloader, Swapper: badSwapper}
-	applied3, err := u3.Check(context.Background())
-	if err == nil || applied3 {
-		t.Fatalf("tampered archive: expected refusal, got applied=%v err=%v", applied3, err)
+	result3, err := u3.Check(context.Background())
+	if err == nil || result3.Applied {
+		t.Fatalf("tampered archive: expected refusal, got result=%+v err=%v", result3, err)
 	}
 	if badSwapper.got != nil {
 		t.Fatal("tampered archive was swapped in despite checksum mismatch")

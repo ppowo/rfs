@@ -25,6 +25,26 @@ func shouldEnableSelfUpdate(buildVersion string, flagEnabled bool) bool {
 	return flagEnabled && buildVersion != "dev"
 }
 
+func pollCycleDetails(selfUpdateEnabled bool, sources []rfs.Source) string {
+	sourceDetail := fmt.Sprintf("%d source polls", len(sources))
+	if len(sources) == 1 {
+		sourceDetail = fmt.Sprintf("source poll %s", sources[0].ID)
+	}
+	if selfUpdateEnabled {
+		return "self-update check + " + sourceDetail
+	}
+	return sourceDetail
+}
+
+func logNextPollCycle(started time.Time, interval time.Duration, selfUpdateEnabled bool, sources []rfs.Source) {
+	next := started.Add(interval)
+	remaining := time.Until(next).Round(time.Second)
+	if remaining < 0 {
+		remaining = 0
+	}
+	log.Printf("next poll cycle in %s at %s (%s)", remaining, next.Format("15:04:05"), pollCycleDetails(selfUpdateEnabled, sources))
+}
+
 func main() {
 	addr := flag.String("addr", ":14298", "HTTP listen address")
 	interval := flag.Duration("interval", time.Hour, "global source polling interval")
@@ -102,6 +122,7 @@ func main() {
 
 	log.Printf("serving feeds on %s", *addr)
 	logFeeds(*addr, registeredSources)
+	log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", *interval, pollCycleDetails(updater != nil, registeredSources))
 
 	// reexec is closed when a self-update is applied, signalling main to drain
 	// (via stop(), the same path a SIGTERM takes) and then syscall.Exec the
@@ -113,18 +134,23 @@ func main() {
 
 	loop := rfs.Loop{
 		Poll: func(ctx context.Context) {
+			started := time.Now()
 			if updater != nil {
-				applied, err := updater.Check(ctx)
+				result, err := updater.Check(ctx)
 				if err != nil {
 					log.Printf("self-update: %v", err)
-				}
-				if applied {
-					log.Printf("self-update: a new release was installed; draining and re-executing")
+				} else if result.Latest == "" {
+					log.Printf("self-update: no releases found; current %s", result.Current)
+				} else if result.Applied {
+					log.Printf("self-update: installed release %s over current %s; draining and re-executing", result.Latest, result.Current)
 					requestReexec()
 					return // re-exec is imminent; skip polling this cycle
+				} else {
+					log.Printf("self-update: latest release %s, current %s; no update", result.Latest, result.Current)
 				}
 			}
 			pollAll(ctx, registeredSources, poller, gate)
+			logNextPollCycle(started, *interval, updater != nil, registeredSources)
 		},
 		Interval: *interval,
 	}

@@ -223,8 +223,9 @@ type BinarySwapper interface {
 
 // Updater runs one self-update check: fetch the latest release, and if it is
 // newer than Current, download the matching archive and checksums.txt,
-// verify the archive, extract the rfs binary, and swap it in. Check returns
-// applied=true only when a new binary was actually swapped.
+// verify the archive, extract the rfs binary, and swap it in. Check returns a
+// result describing the observed latest release and whether a binary was
+// swapped.
 type Updater struct {
 	Current      string
 	GOOS, GOARCH string
@@ -233,41 +234,51 @@ type Updater struct {
 	Swapper      BinarySwapper
 }
 
-func (u Updater) Check(ctx context.Context) (bool, error) {
+// UpdateCheckResult describes the outcome of one self-update check.
+type UpdateCheckResult struct {
+	Current string
+	Latest  string
+	Applied bool
+}
+
+func (u Updater) Check(ctx context.Context) (UpdateCheckResult, error) {
+	result := UpdateCheckResult{Current: u.Current}
 	rel, err := u.Source.Latest(ctx)
 	if err != nil {
-		return false, fmt.Errorf("self-update: fetch latest release: %w", err)
+		return result, fmt.Errorf("self-update: fetch latest release: %w", err)
 	}
+	result.Latest = rel.Version
 	if !isNewerVersion(u.Current, rel.Version) {
-		return false, nil
+		return result, nil
 	}
 	chkAsset, ok := findAssetByName(rel.Assets, "checksums.txt")
 	if !ok {
-		return false, fmt.Errorf("self-update: release %s has no checksums.txt", rel.Version)
+		return result, fmt.Errorf("self-update: release %s has no checksums.txt", rel.Version)
 	}
 	archAsset, ok := selectAsset(rel.Assets, u.GOOS, u.GOARCH)
 	if !ok {
-		return false, fmt.Errorf("self-update: release %s has no archive for %s/%s", rel.Version, u.GOOS, u.GOARCH)
+		return result, fmt.Errorf("self-update: release %s has no archive for %s/%s", rel.Version, u.GOOS, u.GOARCH)
 	}
 	checksums, err := u.Downloader.Download(ctx, chkAsset.URL)
 	if err != nil {
-		return false, fmt.Errorf("self-update: download checksums: %w", err)
+		return result, fmt.Errorf("self-update: download checksums: %w", err)
 	}
 	archive, err := u.Downloader.Download(ctx, archAsset.URL)
 	if err != nil {
-		return false, fmt.Errorf("self-update: download archive: %w", err)
+		return result, fmt.Errorf("self-update: download archive: %w", err)
 	}
 	if err := verifyChecksum(archive, string(checksums), archAsset.Name); err != nil {
-		return false, err // a tampered archive must never reach the swapper
+		return result, err // a tampered archive must never reach the swapper
 	}
 	binary, err := extractBinaryFromArchive(archive)
 	if err != nil {
-		return false, err
+		return result, err
 	}
 	if err := u.Swapper.Swap(binary); err != nil {
-		return false, fmt.Errorf("self-update: swap binary: %w", err)
+		return result, fmt.Errorf("self-update: swap binary: %w", err)
 	}
-	return true, nil
+	result.Applied = true
+	return result, nil
 }
 
 // GitHubReleaseSource fetches the latest release from the GitHub API and maps

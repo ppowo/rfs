@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,24 +24,21 @@ func shouldEnableSelfUpdate(buildVersion string, flagEnabled bool) bool {
 	return flagEnabled && buildVersion != "dev"
 }
 
-func pollCycleDetails(selfUpdateEnabled bool, sources []rfs.Source) string {
+func pollCycleDetails(sources []rfs.Source) string {
 	sourceDetail := fmt.Sprintf("%d source polls", len(sources))
 	if len(sources) == 1 {
 		sourceDetail = fmt.Sprintf("source poll %s", sources[0].ID)
 	}
-	if selfUpdateEnabled {
-		return "self-update check + " + sourceDetail
-	}
 	return sourceDetail
 }
 
-func logNextPollCycle(started time.Time, interval time.Duration, selfUpdateEnabled bool, sources []rfs.Source) {
+func logNextPollCycle(started time.Time, interval time.Duration, sources []rfs.Source) {
 	next := started.Add(interval)
 	remaining := time.Until(next).Round(time.Second)
 	if remaining < 0 {
 		remaining = 0
 	}
-	log.Printf("next poll cycle in %s at %s (%s)", remaining, next.Format("15:04:05"), pollCycleDetails(selfUpdateEnabled, sources))
+	log.Printf("next poll cycle in %s at %s (%s)", remaining, next.Format("15:04:05"), pollCycleDetails(sources))
 }
 
 func main() {
@@ -52,6 +48,8 @@ func main() {
 	dbPath := flag.String("db", "", "SQLite database path; defaults to the OS user cache dir, or use :memory:")
 	showVersion := flag.Bool("version", false, "print build version and exit")
 	selfUpdate := flag.Bool("self-update", true, "enable self-update checks for non-dev builds")
+	selfUpdateInterval := flag.Duration("self-update-interval", time.Hour, "how often to check for a self-update")
+	selfUpdateTimeout := flag.Duration("self-update-timeout", 30*time.Second, "maximum duration of one self-update check")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(buildInfo.String())
@@ -62,6 +60,12 @@ func main() {
 	}
 	if *domainSpacing < 0 {
 		log.Fatalf("domain-spacing must not be negative, got %s", *domainSpacing)
+	}
+	if *selfUpdateInterval <= 0 {
+		log.Fatalf("self-update-interval must be positive, got %s", *selfUpdateInterval)
+	}
+	if *selfUpdateTimeout <= 0 {
+		log.Fatalf("self-update-timeout must be positive, got %s", *selfUpdateTimeout)
 	}
 
 	log.Print(buildInfo.String())
@@ -86,33 +90,22 @@ func main() {
 		MaxBackoff:     time.Hour,
 	})
 
-	// Self-update (ADR 0004): for a deployed build (version baked in by the
-	// release pipeline), check the latest GitHub release at the start of each
-	// poll cycle. A "dev" local build always skips self-update — there is no
-	// point swapping a `go run` temp binary, and it lets local development poll
-	// without hitting the GitHub API. Use -self-update=false to also disable it
-	// for a release-like local build.
-	const selfUpdateRepo = "ppowo/rfs"
-	var updater *rfs.Updater
-	var reexecPath string
+	// Self-update (ADR 0004) is independent of source polling: a deployed build
+	// checks immediately and then on its own cadence with a short deadline. A
+	// "dev" local build always skips self-update — there is no point swapping a
+	// `go run` temp binary, and it lets local development run without hitting
+	// the GitHub API. Use -self-update=false to disable it for a release-like
+	// local build.
+	var updateMonitor *rfs.UpdateMonitor
 	if shouldEnableSelfUpdate(version, *selfUpdate) {
-		swapper, err := rfs.NewFileSwapper()
+		updateMonitor, err = rfs.NewUpdateMonitor(version, rfs.UpdateMonitorConfig{
+			CheckInterval: *selfUpdateInterval,
+			CheckTimeout:  *selfUpdateTimeout,
+		})
 		if err != nil {
 			log.Printf("self-update disabled: %v", err)
 		} else {
-			// Capture the install path before any swap. After Swap renames the
-			// running inode to .bak, a fresh os.Executable() can point at the
-			// backup, so re-exec must use this original install path.
-			reexecPath = swapper.Path()
-			updater = &rfs.Updater{
-				Current:    version,
-				GOOS:       runtime.GOOS,
-				GOARCH:     runtime.GOARCH,
-				Source:     rfs.NewGitHubReleaseSource(selfUpdateRepo),
-				Downloader: rfs.NewHTTPSDownloader(),
-				Swapper:    swapper,
-			}
-			log.Printf("self-update enabled: current version %s, checking %s releases", version, selfUpdateRepo)
+			log.Printf("self-update enabled: current version %s; checking every %s with a %s timeout", version, *selfUpdateInterval, *selfUpdateTimeout)
 		}
 	} else if version == "dev" {
 		log.Printf("self-update disabled: dev build")
@@ -122,35 +115,42 @@ func main() {
 
 	log.Printf("serving feeds on %s", *addr)
 	logFeeds(*addr, registeredSources)
-	log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", *interval, pollCycleDetails(updater != nil, registeredSources))
+	log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", *interval, pollCycleDetails(registeredSources))
 
 	// reexec is closed when a self-update is applied, signalling main to drain
 	// (via stop(), the same path a SIGTERM takes) and then syscall.Exec the
-	// freshly-swapped binary in place. sync.Once guards against double-close if
-	// multiple polls apply an update before the watcher acts on it.
+	// freshly-swapped binary in place. sync.Once guards against double-close.
 	reexec := make(chan struct{})
 	var reexecOnce sync.Once
-	requestReexec := func() { reexecOnce.Do(func() { close(reexec) }) }
+	var reexecPath string
+	requestReexec := func(path string) {
+		reexecOnce.Do(func() {
+			reexecPath = path
+			close(reexec)
+		})
+	}
+	if updateMonitor != nil {
+		go func() {
+			for event := range updateMonitor.Run(ctx) {
+				if event.Err != nil {
+					log.Printf("self-update: %v", event.Err)
+				} else if event.Result.Latest == "" {
+					log.Printf("self-update: no releases found; current %s", event.Result.Current)
+				} else if event.Result.Applied {
+					log.Printf("self-update: installed release %s over current %s; draining and re-executing", event.Result.Latest, event.Result.Current)
+					requestReexec(event.ReexecPath)
+				} else {
+					log.Printf("self-update: latest release %s, current %s; no update", event.Result.Latest, event.Result.Current)
+				}
+			}
+		}()
+	}
 
 	loop := rfs.Loop{
 		Poll: func(ctx context.Context) {
 			started := time.Now()
-			if updater != nil {
-				result, err := updater.Check(ctx)
-				if err != nil {
-					log.Printf("self-update: %v", err)
-				} else if result.Latest == "" {
-					log.Printf("self-update: no releases found; current %s", result.Current)
-				} else if result.Applied {
-					log.Printf("self-update: installed release %s over current %s; draining and re-executing", result.Latest, result.Current)
-					requestReexec()
-					return // re-exec is imminent; skip polling this cycle
-				} else {
-					log.Printf("self-update: latest release %s, current %s; no update", result.Latest, result.Current)
-				}
-			}
 			pollAll(ctx, registeredSources, poller, gate)
-			logNextPollCycle(started, *interval, updater != nil, registeredSources)
+			logNextPollCycle(started, *interval, registeredSources)
 		},
 		Interval: *interval,
 	}
@@ -161,7 +161,7 @@ func main() {
 	}()
 
 	// A self-update applies by triggering the same graceful shutdown a signal
-	// does: stop() cancels ctx, the loop drains its in-flight poll (B), the
+	// does: stop() cancels ctx, the loop drains its in-flight poll, the
 	// server shuts down, then main re-execs. Without reexec this goroutine is
 	// inert; a SIGTERM cancels ctx through signal.NotifyContext instead.
 	go func() {

@@ -2,6 +2,7 @@ package rfs
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -80,5 +81,54 @@ func TestLoopTerminatesDrainWhenPollIsStuck(t *testing.T) {
 		// drain terminated and Run returned.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return after shutdown; a stuck poll pinned the drain (drain never terminates)")
+	}
+}
+
+func TestLoopNeverOverlapsPolls(t *testing.T) {
+	firstPollStarted := make(chan struct{})
+	releaseFirstPoll := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirstPoll) }) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer release()
+
+	var mu sync.Mutex
+	calls := 0
+	loop := Loop{
+		Interval:    5 * time.Millisecond,
+		PollTimeout: time.Second,
+		Poll: func(context.Context) {
+			mu.Lock()
+			calls++
+			call := calls
+			mu.Unlock()
+			if call == 1 {
+				close(firstPollStarted)
+				<-releaseFirstPoll
+			}
+		},
+	}
+	loopDone := make(chan struct{})
+	go func() {
+		loop.Run(ctx)
+		close(loopDone)
+	}()
+
+	<-firstPollStarted
+	time.Sleep(30 * time.Millisecond) // several intervals elapse while poll 1 is blocked
+	mu.Lock()
+	gotCalls := calls
+	mu.Unlock()
+	if gotCalls != 1 {
+		t.Fatalf("poll calls while first poll is in flight = %d, want 1", gotCalls)
+	}
+
+	release()
+	cancel()
+	select {
+	case <-loopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Loop did not stop after cancellation")
 	}
 }

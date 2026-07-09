@@ -2,7 +2,6 @@ package rfs
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
@@ -29,30 +28,29 @@ func (l Loop) Run(ctx context.Context) {
 	if pollTimeout <= 0 {
 		pollTimeout = 2 * time.Minute
 	}
-	var wg sync.WaitGroup
-	poll := func() {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			// The poll context is unrelated to the shutdown signal: a
-			// cancellation drains (the in-flight poll runs to completion)
-			// instead of aborting it. Its own timeout cuts a stuck poll.
-			pollCtx, cancel := context.WithTimeout(context.Background(), pollTimeout)
-			defer cancel()
-			l.Poll(pollCtx)
-		}()
-	}
 
-	poll()
-	ticker := time.NewTicker(l.Interval)
-	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
+		started := time.Now()
+		// The poll context is unrelated to the shutdown signal: cancellation
+		// drains the in-flight poll instead of aborting it. Its own timeout
+		// cuts a stuck poll, and running it synchronously prevents overlap.
+		pollCtx, cancel := context.WithTimeout(context.Background(), pollTimeout)
+		l.Poll(pollCtx)
+		cancel()
+
+		wait := time.Until(started.Add(l.Interval))
+		if wait <= 0 {
+			continue
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
-			wg.Wait() // drain the in-flight poll before returning
+			timer.Stop()
 			return
-		case <-ticker.C:
-			poll()
+		case <-timer.C:
 		}
 	}
 }

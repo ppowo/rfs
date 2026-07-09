@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -175,15 +176,17 @@ func checksumForFile(checksumsTxt, filename string) (string, bool) {
 }
 
 // extractBinaryFromArchive reads a verified goreleaser tar.gz archive and
-// returns the bytes of the single "rfs" binary inside it. The archive is
-// already checksum-verified before this runs, so the binary is authentic.
+// returns the bytes of the single regular "rfs" binary inside it. Both the
+// archive and the extracted binary have independent size limits so malformed
+// release artifacts cannot exhaust memory or decompression work.
 func extractBinaryFromArchive(archive []byte) ([]byte, error) {
 	gr, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, fmt.Errorf("self-update: read archive gzip: %w", err)
 	}
 	defer gr.Close()
-	tr := tar.NewReader(gr)
+
+	tr := tar.NewReader(&sizeLimitedReader{reader: gr, remaining: maxExtractedArchiveBytes})
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -192,14 +195,41 @@ func extractBinaryFromArchive(archive []byte) ([]byte, error) {
 		if err != nil {
 			return nil, fmt.Errorf("self-update: read archive: %w", err)
 		}
-		if hdr.Name == "rfs" {
-			b, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, fmt.Errorf("self-update: read rfs entry: %w", err)
-			}
-			return b, nil
+		if hdr.Name != "rfs" {
+			continue
 		}
+		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeRegA {
+			return nil, fmt.Errorf("self-update: rfs entry is not a regular file")
+		}
+		if hdr.Size <= 0 || hdr.Size > maxExtractedBinaryBytes {
+			return nil, fmt.Errorf("self-update: rfs entry has invalid size %d", hdr.Size)
+		}
+		binary, err := io.ReadAll(io.LimitReader(tr, hdr.Size+1))
+		if err != nil {
+			return nil, fmt.Errorf("self-update: read rfs entry: %w", err)
+		}
+		if int64(len(binary)) != hdr.Size {
+			return nil, fmt.Errorf("self-update: rfs entry size = %d, want %d", len(binary), hdr.Size)
+		}
+		return binary, nil
 	}
+}
+
+type sizeLimitedReader struct {
+	reader    io.Reader
+	remaining int64
+}
+
+func (r *sizeLimitedReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, fmt.Errorf("self-update: archive exceeds %d byte extraction limit", maxExtractedArchiveBytes)
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.reader.Read(p)
+	r.remaining -= int64(n)
+	return n, err
 }
 
 // ReleaseSource fetches the latest release metadata. The real implementation
@@ -281,6 +311,117 @@ func (u Updater) Check(ctx context.Context) (UpdateCheckResult, error) {
 	return result, nil
 }
 
+const (
+	selfUpdateRepo             = "ppowo/rfs"
+	defaultUpdateCheckInterval = time.Hour
+	defaultUpdateCheckTimeout  = 30 * time.Second
+)
+
+// UpdateChecker performs one self-update check. Updater is the production
+// adapter; tests use a fake to control monitor outcomes.
+type UpdateChecker interface {
+	Check(context.Context) (UpdateCheckResult, error)
+}
+
+// UpdateMonitorConfig controls the cadence and deadline of independent
+// self-update checks. Zero values use the production defaults.
+type UpdateMonitorConfig struct {
+	CheckInterval time.Duration
+	CheckTimeout  time.Duration
+}
+
+// UpdateCheckEvent is one completed self-update check. ReexecPath is set by
+// the production monitor and names the newly installed binary after Applied.
+type UpdateCheckEvent struct {
+	Result     UpdateCheckResult
+	Err        error
+	ReexecPath string
+}
+
+// UpdateMonitor owns serial, independent self-update checks. Run checks
+// immediately, then at CheckInterval, and stops after applying an update so a
+// running process can never swap its binary twice.
+type UpdateMonitor struct {
+	checker    UpdateChecker
+	config     UpdateMonitorConfig
+	reexecPath string
+}
+
+// NewUpdateMonitor creates the production self-update monitor. It hides the
+// GitHub, platform, downloader, and filesystem adapters from callers.
+func NewUpdateMonitor(current string, config UpdateMonitorConfig) (*UpdateMonitor, error) {
+	swapper, err := NewFileSwapper()
+	if err != nil {
+		return nil, err
+	}
+	monitor := newUpdateMonitor(Updater{
+		Current:    current,
+		GOOS:       runtime.GOOS,
+		GOARCH:     runtime.GOARCH,
+		Source:     NewGitHubReleaseSource(selfUpdateRepo),
+		Downloader: NewHTTPSDownloader(),
+		Swapper:    swapper,
+	}, config)
+	monitor.reexecPath = swapper.Path()
+	return &monitor, nil
+}
+
+func newUpdateMonitor(checker UpdateChecker, config UpdateMonitorConfig) UpdateMonitor {
+	return UpdateMonitor{checker: checker, config: config}
+}
+
+
+// Run returns checks from a goroutine until ctx is cancelled or an update is
+// applied. Each check has its own deadline, so it cannot consume a source-poll
+// deadline or overlap another check.
+func (m UpdateMonitor) Run(ctx context.Context) <-chan UpdateCheckEvent {
+	events := make(chan UpdateCheckEvent)
+	go func() {
+		defer close(events)
+		timer := time.NewTimer(0)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+			}
+
+			checkCtx, cancel := context.WithTimeout(ctx, m.checkTimeout())
+			result, err := m.checker.Check(checkCtx)
+			cancel()
+			if ctx.Err() != nil {
+				return
+			}
+			event := UpdateCheckEvent{Result: result, Err: err, ReexecPath: m.reexecPath}
+			select {
+			case <-ctx.Done():
+				return
+			case events <- event:
+			}
+			if result.Applied {
+				return
+			}
+			timer.Reset(m.checkInterval())
+		}
+	}()
+	return events
+}
+
+func (m UpdateMonitor) checkInterval() time.Duration {
+	if m.config.CheckInterval <= 0 {
+		return defaultUpdateCheckInterval
+	}
+	return m.config.CheckInterval
+}
+
+func (m UpdateMonitor) checkTimeout() time.Duration {
+	if m.config.CheckTimeout <= 0 {
+		return defaultUpdateCheckTimeout
+	}
+	return m.config.CheckTimeout
+}
+
 // GitHubReleaseSource fetches the latest release from the GitHub API and maps
 // it to a Release with the leading "v" stripped from the tag. repo is
 // "owner/name".
@@ -356,7 +497,17 @@ func (d HTTPSDownloader) Download(ctx context.Context, url string) ([]byte, erro
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download %s: unexpected status %s", url, resp.Status)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes))
+	if resp.ContentLength > maxAssetBytes {
+		return nil, fmt.Errorf("download %s: asset exceeds %d byte limit", url, maxAssetBytes)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxAssetBytes {
+		return nil, fmt.Errorf("download %s: asset exceeds %d byte limit", url, maxAssetBytes)
+	}
+	return body, nil
 }
 
 // FileSwapper replaces the running binary on disk atomically: the old binary
@@ -381,6 +532,14 @@ func NewFileSwapper() (FileSwapper, error) {
 func (s FileSwapper) Path() string { return s.path }
 
 func (s FileSwapper) Swap(newBinary []byte) error {
+	installed, err := os.Stat(s.path)
+	if err != nil {
+		return fmt.Errorf("stat installed binary: %w", err)
+	}
+	if !installed.Mode().IsRegular() {
+		return fmt.Errorf("installed binary is not a regular file")
+	}
+
 	dir := filepath.Dir(s.path)
 	tmp, err := os.CreateTemp(dir, ".rfs-new-")
 	if err != nil {
@@ -392,24 +551,49 @@ func (s FileSwapper) Swap(newBinary []byte) error {
 		tmp.Close()
 		return fmt.Errorf("write new binary: %w", err)
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	if err := tmp.Chmod(installed.Mode().Perm()); err != nil {
 		tmp.Close()
 		return fmt.Errorf("chmod new binary: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync new binary: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp binary: %w", err)
 	}
+
 	bak := s.path + ".bak"
-	os.Remove(bak) // best-effort: clear any previous backup
+	_ = os.Remove(bak) // best-effort: clear any previous backup
 	if err := os.Rename(s.path, bak); err != nil {
 		return fmt.Errorf("set aside old binary: %w", err)
+	}
+	if err := syncDirectory(dir); err != nil {
+		_ = os.Rename(bak, s.path)
+		return fmt.Errorf("sync backup rename: %w", err)
 	}
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		// Try to restore the old binary so the box isn't left without one.
 		_ = os.Rename(bak, s.path)
 		return fmt.Errorf("install new binary: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync installed binary: %w", err)
+	}
 	return nil
 }
 
-const maxAssetBytes = 256 << 20 // 256 MiB: a generous cap on a release archive or checksums file.
+func syncDirectory(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+const (
+	maxAssetBytes             int64 = 256 << 20 // generous cap on a compressed release asset
+	maxExtractedArchiveBytes  int64 = 256 << 20 // cap all decompressed tar content
+	maxExtractedBinaryBytes   int64 = 128 << 20 // cap the executable within that archive
+)

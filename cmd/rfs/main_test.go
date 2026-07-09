@@ -31,13 +31,10 @@ func TestShouldEnableSelfUpdate(t *testing.T) {
 
 func TestPollCycleDetails(t *testing.T) {
 	sources := []rfs.Source{{ID: "meltzer-5-star-matches"}}
-	if got := pollCycleDetails(true, sources); got != "self-update check + source poll meltzer-5-star-matches" {
-		t.Fatalf("pollCycleDetails(self-update enabled) = %q", got)
+	if got := pollCycleDetails(sources); got != "source poll meltzer-5-star-matches" {
+		t.Fatalf("pollCycleDetails(one source) = %q", got)
 	}
-	if got := pollCycleDetails(false, sources); got != "source poll meltzer-5-star-matches" {
-		t.Fatalf("pollCycleDetails(self-update disabled) = %q", got)
-	}
-	if got := pollCycleDetails(true, nil); got != "self-update check + 0 source polls" {
+	if got := pollCycleDetails(nil); got != "0 source polls" {
 		t.Fatalf("pollCycleDetails(no sources) = %q", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestIsNewerVersion is the self-update gate: it decides whether the latest
@@ -144,6 +146,44 @@ func TestExtractBinaryFromArchive(t *testing.T) {
 	}
 }
 
+func TestExtractBinaryFromArchiveRejectsNonRegularRFS(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: "rfs", Typeflag: tar.TypeSymlink, Linkname: "/tmp/other-rfs"}); err != nil {
+		t.Fatalf("write symlink header: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	if _, err := extractBinaryFromArchive(buf.Bytes()); err == nil {
+		t.Fatal("accepted a non-regular rfs archive entry")
+	}
+}
+
+func TestExtractBinaryFromArchiveRejectsOversizedRFS(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	if err := tw.WriteHeader(&tar.Header{Name: "rfs", Mode: 0o755, Size: maxExtractedBinaryBytes + 1}); err != nil {
+		t.Fatalf("write oversized header: %v", err)
+	}
+	// The extractor rejects the declared size before reading file content, so a
+	// deliberately incomplete tar stream is sufficient and avoids allocating it.
+	_ = tw.Close()
+	if err := gw.Close(); err != nil {
+		t.Fatalf("close gzip: %v", err)
+	}
+
+	if _, err := extractBinaryFromArchive(buf.Bytes()); err == nil {
+		t.Fatal("accepted an oversized rfs archive entry")
+	}
+}
+
 func makeArchive(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
@@ -196,6 +236,75 @@ type fakeSwapper struct {
 }
 
 func (f *fakeSwapper) Swap(b []byte) error { f.got = b; return nil }
+
+type fakeUpdateChecker struct {
+	result UpdateCheckResult
+	err    error
+	calls  int
+}
+
+func (f *fakeUpdateChecker) Check(context.Context) (UpdateCheckResult, error) {
+	f.calls++
+	return f.result, f.err
+}
+
+func TestUpdateMonitorReportsAppliedUpdateOnce(t *testing.T) {
+	checker := &fakeUpdateChecker{result: UpdateCheckResult{Current: "0.1.0", Latest: "0.2.0", Applied: true}}
+	monitor := newUpdateMonitor(checker, UpdateMonitorConfig{CheckInterval: time.Hour, CheckTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	events := monitor.Run(ctx)
+	select {
+	case event := <-events:
+		if event.Err != nil {
+			t.Fatalf("update event error: %v", event.Err)
+		}
+		if !event.Result.Applied || event.Result.Current != "0.1.0" || event.Result.Latest != "0.2.0" {
+			t.Fatalf("update event = %+v, want applied 0.1.0 -> 0.2.0", event.Result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UpdateMonitor did not report its initial update check")
+	}
+
+	select {
+	case _, ok := <-events:
+		if ok {
+			t.Fatal("UpdateMonitor continued after applying an update")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UpdateMonitor did not stop after applying an update")
+	}
+	if checker.calls != 1 {
+		t.Fatalf("checker calls = %d, want 1", checker.calls)
+	}
+}
+
+func TestUpdateMonitorTimesOutCheckWithoutCancellingItsLifetime(t *testing.T) {
+	checker := updateCheckerFunc(func(ctx context.Context) (UpdateCheckResult, error) {
+		<-ctx.Done()
+		return UpdateCheckResult{}, ctx.Err()
+	})
+	monitor := newUpdateMonitor(checker, UpdateMonitorConfig{CheckInterval: time.Hour, CheckTimeout: 20 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	select {
+	case event := <-monitor.Run(ctx):
+		if !errors.Is(event.Err, context.DeadlineExceeded) {
+			t.Fatalf("update event error = %v, want check deadline exceeded", event.Err)
+		}
+		if ctx.Err() != nil {
+			t.Fatal("update check timeout cancelled the monitor lifetime")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("UpdateMonitor did not enforce its check timeout")
+	}
+}
+
+type updateCheckerFunc func(context.Context) (UpdateCheckResult, error)
+
+func (f updateCheckerFunc) Check(ctx context.Context) (UpdateCheckResult, error) { return f(ctx) }
 
 // TestUpdaterCheckAppliesNewerRelease drives the full self-update pipeline with
 // fakes: a newer release is fetched, the matching archive and checksums are
@@ -276,7 +385,7 @@ func TestFileSwapperSwapReplacesInstallPath(t *testing.T) {
 	path := filepath.Join(dir, "rfs")
 	oldBinary := []byte("#!/bin/sh\necho OLD-BINARY-RAN\n")
 	newBinary := []byte("#!/bin/sh\necho NEW-BINARY-RAN\n")
-	if err := os.WriteFile(path, oldBinary, 0o755); err != nil {
+	if err := os.WriteFile(path, oldBinary, 0o750); err != nil {
 		t.Fatalf("write old binary: %v", err)
 	}
 
@@ -294,6 +403,13 @@ func TestFileSwapperSwapReplacesInstallPath(t *testing.T) {
 	}
 	if !bytes.Equal(gotNew, newBinary) {
 		t.Fatalf("installed binary = %q, want %q", gotNew, newBinary)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat installed binary: %v", err)
+	}
+	if gotMode := info.Mode().Perm(); gotMode != 0o750 {
+		t.Fatalf("installed binary mode = %o, want preserved mode 750", gotMode)
 	}
 	gotOld, err := os.ReadFile(path + ".bak")
 	if err != nil {

@@ -21,12 +21,17 @@ import (
 	"github.com/ppowo/rfs/internal/sources"
 )
 
+func shouldEnableSelfUpdate(buildVersion string, flagEnabled bool) bool {
+	return flagEnabled && buildVersion != "dev"
+}
+
 func main() {
-	addr := flag.String("addr", ":8080", "HTTP listen address")
+	addr := flag.String("addr", ":14298", "HTTP listen address")
 	interval := flag.Duration("interval", time.Hour, "global source polling interval")
 	domainSpacing := flag.Duration("domain-spacing", 10*time.Second, "minimum spacing between requests to the same domain")
 	dbPath := flag.String("db", "", "SQLite database path; defaults to the OS user cache dir, or use :memory:")
 	showVersion := flag.Bool("version", false, "print build version and exit")
+	selfUpdate := flag.Bool("self-update", true, "enable self-update checks for non-dev builds")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(versionString())
@@ -63,16 +68,22 @@ func main() {
 
 	// Self-update (ADR 0004): for a deployed build (version baked in by the
 	// release pipeline), check the latest GitHub release at the start of each
-	// poll cycle. A "dev" local build skips self-update — there is no point
-	// swapping a `go run` temp binary, and it lets local development poll without
-	// hitting the GitHub API.
+	// poll cycle. A "dev" local build always skips self-update — there is no
+	// point swapping a `go run` temp binary, and it lets local development poll
+	// without hitting the GitHub API. Use -self-update=false to also disable it
+	// for a release-like local build.
 	const selfUpdateRepo = "ppowo/rfs"
 	var updater *rfs.Updater
-	if version != "dev" {
+	var reexecPath string
+	if shouldEnableSelfUpdate(version, *selfUpdate) {
 		swapper, err := rfs.NewFileSwapper()
 		if err != nil {
 			log.Printf("self-update disabled: %v", err)
 		} else {
+			// Capture the install path before any swap. After Swap renames the
+			// running inode to .bak, a fresh os.Executable() can point at the
+			// backup, so re-exec must use this original install path.
+			reexecPath = swapper.Path()
 			updater = &rfs.Updater{
 				Current:    version,
 				GOOS:       runtime.GOOS,
@@ -83,6 +94,10 @@ func main() {
 			}
 			log.Printf("self-update enabled: current version %s, checking %s releases", version, selfUpdateRepo)
 		}
+	} else if version == "dev" {
+		log.Printf("self-update disabled: dev build")
+	} else {
+		log.Printf("self-update disabled: -self-update=false")
 	}
 
 	log.Printf("serving feeds on %s", *addr)
@@ -151,16 +166,16 @@ func main() {
 
 	<-loopDone // wait for the poll loop to drain before the process exits
 
-	// If a self-update was applied, the new binary is on disk under the same
-	// path; replace this process image with it in place (same PID, no restart).
+	// If a self-update was applied, the new binary is on disk at reexecPath
+	// (captured before the swap); replace this process image with it in place
+	// (same PID, no restart).
 	select {
 	case <-reexec:
-		exe, err := os.Executable()
-		if err != nil {
-			log.Fatalf("self-update: locate binary for re-exec: %v", err)
+		if reexecPath == "" {
+			log.Fatalf("self-update: missing re-exec path")
 		}
-		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
-			log.Fatalf("self-update: re-exec: %v", err)
+		if err := syscall.Exec(reexecPath, os.Args, os.Environ()); err != nil {
+			log.Fatalf("self-update: re-exec %s: %v", reexecPath, err)
 		}
 	default:
 	}

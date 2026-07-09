@@ -8,15 +8,20 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
 // TestIsNewerVersion is the self-update gate: it decides whether the latest
 // GitHub release is newer than the running build's baked-in version. It must
 // normalize a leading "v" (goreleaser bakes the tag without "v"; the GitHub
-// tag_name carries it), compare X.Y.Z numerically, and treat a "dev" local
-// build as older than any real release so `go run`/`go install` builds update
-// on first poll.
+// tag_name carries it), compare X.Y.Z numerically, and rank a "dev" local
+// build below any real release. cmd/rfs skips constructing an updater for dev
+// builds, but the comparator itself remains explicit about the ordering.
 func TestIsNewerVersion(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -246,5 +251,117 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	}
 	if badSwapper.got != nil {
 		t.Fatal("tampered archive was swapped in despite checksum mismatch")
+	}
+}
+
+func TestFileSwapperSwapReplacesInstallPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script executable fixture is Unix-only")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "rfs")
+	oldBinary := []byte("#!/bin/sh\necho OLD-BINARY-RAN\n")
+	newBinary := []byte("#!/bin/sh\necho NEW-BINARY-RAN\n")
+	if err := os.WriteFile(path, oldBinary, 0o755); err != nil {
+		t.Fatalf("write old binary: %v", err)
+	}
+
+	swapper := FileSwapper{path: path}
+	if got := swapper.Path(); got != path {
+		t.Fatalf("Path() = %q, want %q", got, path)
+	}
+	if err := swapper.Swap(newBinary); err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+
+	gotNew, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read installed binary: %v", err)
+	}
+	if !bytes.Equal(gotNew, newBinary) {
+		t.Fatalf("installed binary = %q, want %q", gotNew, newBinary)
+	}
+	gotOld, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read backup binary: %v", err)
+	}
+	if !bytes.Equal(gotOld, oldBinary) {
+		t.Fatalf("backup binary = %q, want %q", gotOld, oldBinary)
+	}
+
+	out, err := exec.Command(path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run installed binary: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "NEW-BINARY-RAN" {
+		t.Fatalf("installed binary output = %q, want NEW-BINARY-RAN", out)
+	}
+}
+
+func TestPostSwapExecutablePointsAtBackupOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/exe rename behaviour is Linux-specific")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module helper\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatalf("write helper go.mod: %v", err)
+	}
+	helperSource := `package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	installPath, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	bak := installPath + ".bak"
+	_ = os.Remove(bak)
+	if err := os.Rename(installPath, bak); err != nil {
+		panic(err)
+	}
+	newBinary := []byte("#!/bin/sh\necho NEW-BINARY-RAN\n")
+	if err := os.WriteFile(installPath, newBinary, 0o755); err != nil {
+		panic(err)
+	}
+	postSwapPath, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(postSwapPath)
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(helperSource), 0o644); err != nil {
+		t.Fatalf("write helper main.go: %v", err)
+	}
+
+	helper := filepath.Join(dir, "helper")
+	build := exec.Command("go", "build", "-o", helper, ".")
+	build.Dir = dir
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build helper: %v\n%s", err, out)
+	}
+
+	out, err := exec.Command(helper).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run helper: %v\n%s", err, out)
+	}
+	postSwapPath := strings.TrimSpace(string(out))
+	wantPostSwapPath := helper + ".bak"
+	if filepath.Clean(postSwapPath) != filepath.Clean(wantPostSwapPath) {
+		t.Fatalf("post-swap os.Executable() = %q, want %q", postSwapPath, wantPostSwapPath)
+	}
+
+	out, err = exec.Command(helper).CombinedOutput()
+	if err != nil {
+		t.Fatalf("run install path after swap: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "NEW-BINARY-RAN" {
+		t.Fatalf("install path output = %q, want NEW-BINARY-RAN", out)
 	}
 }

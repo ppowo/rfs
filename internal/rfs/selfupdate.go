@@ -38,9 +38,8 @@ type Release struct {
 // Versions are UTC build timestamps (semver-shaped YYYY.MD.HMS, per the release
 // workflow), compared field-by-field as numbers left to right — so a later
 // timestamp is always newer. A leading "v" is tolerated but stripped (unused
-// under time-based versioning; kept for robustness). The "dev" local-build
-// sentinel is older than any real release so a `go run`/`go install` build
-// updates on the first poll.
+// sentinel is older than any real release for callers that ask the comparison;
+// cmd/rfs deliberately skips constructing an updater for dev builds.
 func isNewerVersion(current, latest string) bool {
 	current = strings.TrimPrefix(current, "v")
 	latest = strings.TrimPrefix(latest, "v")
@@ -364,6 +363,11 @@ func NewFileSwapper() (FileSwapper, error) {
 	}
 	return FileSwapper{path: p}, nil
 }
+
+// Path returns the binary install path captured before any swap. Use this path
+// for re-exec after Swap: on Linux, a fresh os.Executable() after the rename can
+// point at the .bak backup (the old binary), not the newly installed file.
+func (s FileSwapper) Path() string { return s.path }
 
 func (s FileSwapper) Swap(newBinary []byte) error {
 	dir := filepath.Dir(s.path)

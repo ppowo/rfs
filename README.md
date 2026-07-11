@@ -13,6 +13,8 @@ By default the server listens on `:14298` and polls every hour. Feeds are served
 - `/` — HTML index listing every source
 - `/feeds/meltzer-5-star-matches.xml` — RSS 2.0 feed
 - `/feeds/meltzer-5-star-matches.html` — HTML view of the feed
+- `/feeds/ptg.xml` — latest Desuarchive `/ptg/` threads
+- `/feeds/ptg.html` — HTML view of the `/ptg/` feed
 
 State is stored in a SQLite database under the OS user cache directory by default:
 

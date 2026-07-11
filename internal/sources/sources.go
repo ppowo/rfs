@@ -3,6 +3,7 @@ package sources
 import (
 	"github.com/ppowo/rfs/internal/rfs"
 	"github.com/ppowo/rfs/internal/sources/meltzer"
+	"github.com/ppowo/rfs/internal/sources/ptg"
 )
 
 func All() []rfs.Source {
@@ -16,6 +17,16 @@ func All() []rfs.Source {
 				Link:        meltzer.PageURL,
 			},
 			Flow: meltzer.Flow{},
+		},
+		{
+			ID:  "ptg",
+			URL: ptg.PageURL,
+			Meta: rfs.SourceMeta{
+				Title:       "/ptg/ - Private Trackers General",
+				Description: "Latest /ptg/ opening posts returned by Desuarchive search.",
+				Link:        ptg.PageURL,
+			},
+			Flow: ptg.Flow{},
 		},
 	}
 }

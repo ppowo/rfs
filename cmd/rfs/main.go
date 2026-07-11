@@ -48,7 +48,7 @@ func main() {
 	dbPath := flag.String("db", "", "SQLite database path; defaults to the OS user cache dir, or use :memory:")
 	showVersion := flag.Bool("version", false, "print build version and exit")
 	selfUpdate := flag.Bool("self-update", true, "enable self-update checks for non-dev builds")
-	selfUpdateInterval := flag.Duration("self-update-interval", time.Hour, "how often to check for a self-update")
+	selfUpdateInterval := flag.Duration("self-update-interval", 10*time.Minute, "how often to check for a self-update")
 	selfUpdateTimeout := flag.Duration("self-update-timeout", 30*time.Second, "maximum duration of one self-update check")
 	flag.Parse()
 	if *showVersion {

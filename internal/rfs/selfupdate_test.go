@@ -60,67 +60,23 @@ func TestIsNewerVersion(t *testing.T) {
 	}
 }
 
-// TestSelectAsset picks the archive matching the running GOOS/GOARCH from a
-// release's assets by its name suffix (_<os>_<arch>.tar.gz). It must not match
-// checksums.txt or an archive for a different platform.
-func TestSelectAsset(t *testing.T) {
-	assets := []Asset{
-		{Name: "rfs_0.1.0_linux_amd64.tar.gz", URL: "u1"},
-		{Name: "rfs_0.1.0_linux_arm64.tar.gz", URL: "u2"},
-		{Name: "checksums.txt", URL: "u3"},
-	}
-	got, ok := selectAsset(assets, "linux", "amd64")
-	if !ok || got.URL != "u1" {
-		t.Fatalf("select linux/amd64: ok=%v asset=%#v", ok, got)
-	}
-	got, ok = selectAsset(assets, "linux", "arm64")
-	if !ok || got.URL != "u2" {
-		t.Fatalf("select linux/arm64: ok=%v asset=%#v", ok, got)
-	}
-	if _, ok := selectAsset(assets, "linux", "386"); ok {
-		t.Fatal("selected an asset for an absent platform")
-	}
-	if _, ok := selectAsset(assets, "darwin", "amd64"); ok {
-		t.Fatal("selected an asset for a different OS")
-	}
-}
-
-// TestFindAssetByName locates the checksums.txt asset by exact name so the
-// tick can download it for verification.
-func TestFindAssetByName(t *testing.T) {
-	assets := []Asset{
-		{Name: "rfs_0.1.0_linux_amd64.tar.gz", URL: "u1"},
-		{Name: "checksums.txt", URL: "u3"},
-	}
-	got, ok := findAssetByName(assets, "checksums.txt")
-	if !ok || got.URL != "u3" {
-		t.Fatalf("find checksums.txt: ok=%v asset=%#v", ok, got)
-	}
-	if _, ok := findAssetByName(assets, "missing.txt"); ok {
-		t.Fatal("found a non-existent asset")
-	}
-}
-
-// TestVerifyChecksum verifies the downloaded archive against checksums.txt: it
-// hashes the archive, finds the matching filename line, and compares. The
-// expected hash is the well-known sha256 of "hello" (an independent value,
-// not recomputed by the test) so a correct verify is genuinely confirmed.
-func TestVerifyChecksum(t *testing.T) {
+// TestValidateReleaseChecksum verifies the maintained adapter's checksums.txt
+// validator against the checksum format GoReleaser publishes. The expected
+// hash is the well-known sha256 of "hello", rather than a value recomputed by
+// this test.
+func TestValidateReleaseChecksum(t *testing.T) {
 	// sha256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
 	archive := []byte("hello")
 	name := "rfs_0.1.0_linux_amd64.tar.gz"
 	checksums := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  " + name + "\n"
-	if err := verifyChecksum(archive, checksums, name); err != nil {
+	if err := validateReleaseChecksum(name, archive, []byte(checksums)); err != nil {
 		t.Fatalf("valid checksum rejected: %v", err)
 	}
 
-	// Tampered archive: checksum must not match.
-	if err := verifyChecksum([]byte("world"), checksums, name); err == nil {
+	if err := validateReleaseChecksum(name, []byte("world"), []byte(checksums)); err == nil {
 		t.Fatal("tampered archive accepted (checksum mismatch not detected)")
 	}
-
-	// Filename absent from checksums.txt.
-	if err := verifyChecksum(archive, checksums, "rfs_0.1.0_linux_arm64.tar.gz"); err == nil {
+	if err := validateReleaseChecksum("rfs_0.1.0_linux_arm64.tar.gz", archive, []byte(checksums)); err == nil {
 		t.Fatal("accepted a checksum line for a different filename")
 	}
 }
@@ -206,29 +162,28 @@ func makeArchive(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-type fakeReleaseSource struct {
-	rel Release
-	err error
+type fakeReleaseClient struct {
+	latest ReleaseCandidate
+	found  bool
+	err    error
+	assets map[int64][]byte
+	calls  []int64
 }
 
-func (f fakeReleaseSource) Latest(context.Context) (Release, error) { return f.rel, f.err }
-
-type fakeDownloader struct {
-	byURL map[string][]byte
-	err   error
-	calls []string
+func (f *fakeReleaseClient) Latest(context.Context) (ReleaseCandidate, bool, error) {
+	return f.latest, f.found, f.err
 }
 
-func (f *fakeDownloader) Download(_ context.Context, url string) ([]byte, error) {
-	f.calls = append(f.calls, url)
+func (f *fakeReleaseClient) Download(_ context.Context, _ ReleaseCandidate, assetID int64) ([]byte, error) {
+	f.calls = append(f.calls, assetID)
 	if f.err != nil {
 		return nil, f.err
 	}
-	b, ok := f.byURL[url]
+	asset, ok := f.assets[assetID]
 	if !ok {
-		return nil, fmt.Errorf("fake: no asset for %s", url)
+		return nil, fmt.Errorf("fake: no asset for %d", assetID)
 	}
-	return b, nil
+	return asset, nil
 }
 
 type fakeSwapper struct {
@@ -246,6 +201,13 @@ type fakeUpdateChecker struct {
 func (f *fakeUpdateChecker) Check(context.Context) (UpdateCheckResult, error) {
 	f.calls++
 	return f.result, f.err
+}
+
+func TestUpdateMonitorDefaultsToTenMinuteChecks(t *testing.T) {
+	monitor := newUpdateMonitor(&fakeUpdateChecker{}, UpdateMonitorConfig{})
+	if got := monitor.checkInterval(); got != 10*time.Minute {
+		t.Fatalf("default update check interval = %s, want 10m", got)
+	}
 }
 
 func TestUpdateMonitorReportsAppliedUpdateOnce(t *testing.T) {
@@ -307,23 +269,30 @@ type updateCheckerFunc func(context.Context) (UpdateCheckResult, error)
 func (f updateCheckerFunc) Check(ctx context.Context) (UpdateCheckResult, error) { return f(ctx) }
 
 // TestUpdaterCheckAppliesNewerRelease drives the full self-update pipeline with
-// fakes: a newer release is fetched, the matching archive and checksums are
-// downloaded, the archive is verified, the rfs binary is extracted, and the
-// swapper receives it. Equal versions apply nothing. A tampered archive is
-// refused before the swapper is ever touched.
+// a release client seam: a newer release is fetched, the matching archive and
+// checksums are downloaded, the archive is verified, the rfs binary is
+// extracted, and the swapper receives it. Equal versions apply nothing. A
+// tampered archive is refused before the swapper is ever touched.
 func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	binary := []byte("NEW-BINARY")
 	archive := makeArchive(t, map[string]string{"rfs": string(binary)})
 	sum := sha256.Sum256(archive)
-	checksums := hex.EncodeToString(sum[:]) + "  rfs_0.2.0_linux_amd64.tar.gz\n"
+	archiveName := "rfs_0.2.0_linux_amd64.tar.gz"
+	checksums := hex.EncodeToString(sum[:]) + "  " + archiveName + "\n"
 
-	rel := Release{Version: "0.2.0", Assets: []Asset{
-		{Name: "rfs_0.2.0_linux_amd64.tar.gz", URL: "arch"},
-		{Name: "checksums.txt", URL: "chk"},
-	}}
-	downloader := &fakeDownloader{byURL: map[string][]byte{"arch": archive, "chk": []byte(checksums)}}
+	candidate := ReleaseCandidate{
+		Version:     "0.2.0",
+		ArchiveName: archiveName,
+		ArchiveID:   1,
+		ChecksumsID: 2,
+	}
+	client := &fakeReleaseClient{
+		latest: candidate,
+		found:  true,
+		assets: map[int64][]byte{1: archive, 2: []byte(checksums)},
+	}
 	swapper := &fakeSwapper{}
-	u := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: downloader, Swapper: swapper}
+	u := Updater{Current: "0.1.0", Client: client, Swapper: swapper}
 
 	result, err := u.Check(context.Background())
 	if err != nil {
@@ -338,25 +307,29 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	if !bytes.Equal(swapper.got, binary) {
 		t.Fatalf("swapper got %q, want the extracted binary %q", swapper.got, binary)
 	}
+	if len(client.calls) != 2 || client.calls[0] != 2 || client.calls[1] != 1 {
+		t.Fatalf("download calls = %v, want checksums then archive", client.calls)
+	}
 
 	// Equal version: nothing is downloaded or swapped.
-	downloader2 := &fakeDownloader{byURL: downloader.byURL}
-	swapper2 := &fakeSwapper{}
-	u2 := Updater{Current: "0.2.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: downloader2, Swapper: swapper2}
-	result2, err := u2.Check(context.Background())
+	equalClient := &fakeReleaseClient{latest: candidate, found: true, assets: client.assets}
+	equalSwapper := &fakeSwapper{}
+	equalUpdater := Updater{Current: "0.2.0", Client: equalClient, Swapper: equalSwapper}
+	result2, err := equalUpdater.Check(context.Background())
 	if err != nil || result2.Applied {
 		t.Fatalf("equal version: result=%+v err=%v", result2, err)
 	}
 	if result2.Current != "0.2.0" || result2.Latest != "0.2.0" {
 		t.Fatalf("equal version result = %+v, want current/latest 0.2.0", result2)
 	}
-	if len(downloader2.calls) != 0 || swapper2.got != nil {
+	if len(equalClient.calls) != 0 || equalSwapper.got != nil {
 		t.Fatal("equal version downloaded or swapped")
 	}
 
 	// No release yet: the check reports the current version and applies nothing.
-	uNoRelease := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{}, Downloader: &fakeDownloader{}, Swapper: &fakeSwapper{}}
-	resultNoRelease, err := uNoRelease.Check(context.Background())
+	noReleaseClient := &fakeReleaseClient{}
+	noReleaseUpdater := Updater{Current: "0.1.0", Client: noReleaseClient, Swapper: &fakeSwapper{}}
+	resultNoRelease, err := noReleaseUpdater.Check(context.Background())
 	if err != nil || resultNoRelease.Applied || resultNoRelease.Latest != "" || resultNoRelease.Current != "0.1.0" {
 		t.Fatalf("no release: result=%+v err=%v", resultNoRelease, err)
 	}
@@ -364,15 +337,39 @@ func TestUpdaterCheckAppliesNewerRelease(t *testing.T) {
 	// Tampered archive: checksum must fail and the swapper must NOT be called.
 	tampered := append([]byte{}, archive...)
 	tampered[0] ^= 0xff
-	badDownloader := &fakeDownloader{byURL: map[string][]byte{"arch": tampered, "chk": []byte(checksums)}}
+	badClient := &fakeReleaseClient{
+		latest: candidate,
+		found:  true,
+		assets: map[int64][]byte{1: tampered, 2: []byte(checksums)},
+	}
 	badSwapper := &fakeSwapper{}
-	u3 := Updater{Current: "0.1.0", GOOS: "linux", GOARCH: "amd64", Source: fakeReleaseSource{rel: rel}, Downloader: badDownloader, Swapper: badSwapper}
-	result3, err := u3.Check(context.Background())
+	badUpdater := Updater{Current: "0.1.0", Client: badClient, Swapper: badSwapper}
+	result3, err := badUpdater.Check(context.Background())
 	if err == nil || result3.Applied {
 		t.Fatalf("tampered archive: expected refusal, got result=%+v err=%v", result3, err)
 	}
 	if badSwapper.got != nil {
 		t.Fatal("tampered archive was swapped in despite checksum mismatch")
+	}
+}
+
+func TestUpdaterDoesNotDowngrade(t *testing.T) {
+	client := &fakeReleaseClient{
+		latest: ReleaseCandidate{Version: "0.1.0"},
+		found:  true,
+	}
+	swapper := &fakeSwapper{}
+	u := Updater{Current: "0.2.0", Client: client, Swapper: swapper}
+
+	result, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if result.Applied {
+		t.Fatal("downgrade was applied")
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("downgrade downloaded assets: %v", client.calls)
 	}
 }
 

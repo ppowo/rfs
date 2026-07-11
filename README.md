@@ -15,6 +15,8 @@ By default the server listens on `:14298` and polls every hour. Feeds are served
 - `/feeds/meltzer-5-star-matches.html` — HTML view of the feed
 - `/feeds/ptg.xml` — latest Desuarchive `/ptg/` threads
 - `/feeds/ptg.html` — HTML view of the `/ptg/` feed
+- `/feeds/film.xml` — latest 4plebs `/film/` threads
+- `/feeds/film.html` — HTML view of the `/film/` feed
 
 State is stored in a SQLite database under the OS user cache directory by default:
 

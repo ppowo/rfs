@@ -2,6 +2,7 @@ package sources
 
 import (
 	"github.com/ppowo/rfs/internal/rfs"
+	"github.com/ppowo/rfs/internal/sources/film"
 	"github.com/ppowo/rfs/internal/sources/meltzer"
 	"github.com/ppowo/rfs/internal/sources/ptg"
 )
@@ -27,6 +28,16 @@ func All() []rfs.Source {
 				Link:        ptg.PageURL,
 			},
 			Flow: ptg.Flow{},
+		},
+		{
+			ID:  "film",
+			URL: film.PageURL,
+			Meta: rfs.SourceMeta{
+				Title:       "/film/ - Arthouse & Classic Cinema",
+				Description: "Latest /film/ opening posts returned by 4plebs search.",
+				Link:        film.PageURL,
+			},
+			Flow: film.Flow{},
 		},
 	}
 }

@@ -17,6 +17,8 @@ By default the server listens on `:14298` and polls every hour. Feeds are served
 - `/feeds/ptg.html` — HTML view of the `/ptg/` feed
 - `/feeds/film.xml` — latest 4plebs `/film/` threads
 - `/feeds/film.html` — HTML view of the `/film/` feed
+- `/feeds/tildes-comp.xml` — most-upvoted `~comp` topics on Tildes over the past year
+- `/feeds/tildes-comp.html` — HTML view of the Tildes feed
 
 State is stored in a SQLite database under the OS user cache directory by default:
 

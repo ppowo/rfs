@@ -6,6 +6,7 @@ import (
 	"github.com/ppowo/rfs/internal/sources"
 	"github.com/ppowo/rfs/internal/sources/film"
 	"github.com/ppowo/rfs/internal/sources/ptg"
+	"github.com/ppowo/rfs/internal/sources/tildes"
 )
 
 func TestAllIncludesPTGSource(t *testing.T) {
@@ -55,5 +56,30 @@ func TestAllIncludesFilmSource(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("sources.All does not include the film source")
+	}
+}
+
+func TestAllIncludesTildesCompSource(t *testing.T) {
+	var found bool
+	for _, source := range sources.All() {
+		if source.ID != "tildes-comp" {
+			continue
+		}
+		found = true
+		if source.URL != tildes.PageURL {
+			t.Fatalf("tildes-comp source URL = %q, want %q", source.URL, tildes.PageURL)
+		}
+		if source.Meta.Title != "Tildes ~comp - top of the year" {
+			t.Fatalf("tildes-comp source title = %q", source.Meta.Title)
+		}
+		if source.Meta.Link != tildes.PageURL {
+			t.Fatalf("tildes-comp source link = %q, want %q", source.Meta.Link, tildes.PageURL)
+		}
+		if source.Flow.Version() != tildes.ExtractVersion {
+			t.Fatalf("tildes-comp source flow version = %d, want %d", source.Flow.Version(), tildes.ExtractVersion)
+		}
+	}
+	if !found {
+		t.Fatal("sources.All does not include the tildes-comp source")
 	}
 }

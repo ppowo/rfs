@@ -5,6 +5,7 @@ import (
 	"github.com/ppowo/rfs/internal/sources/film"
 	"github.com/ppowo/rfs/internal/sources/meltzer"
 	"github.com/ppowo/rfs/internal/sources/ptg"
+	"github.com/ppowo/rfs/internal/sources/tildes"
 )
 
 func All() []rfs.Source {
@@ -38,6 +39,16 @@ func All() []rfs.Source {
 				Link:        film.PageURL,
 			},
 			Flow: film.Flow{},
+		},
+		{
+			ID:  "tildes-comp",
+			URL: tildes.PageURL,
+			Meta: rfs.SourceMeta{
+				Title:       "Tildes ~comp - top of the year",
+				Description: "Most-upvoted ~comp topics on Tildes over the past year.",
+				Link:        tildes.PageURL,
+			},
+			Flow: tildes.Flow{},
 		},
 	}
 }

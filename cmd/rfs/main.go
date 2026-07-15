@@ -144,35 +144,6 @@ func main() {
 		log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", schedule.interval, pollCycleDetails(schedule.sources))
 	}
 
-	// reexec is closed when a self-update is applied, signalling main to drain
-	// (via stop(), the same path a SIGTERM takes) and then syscall.Exec the
-	// freshly-swapped binary in place. sync.Once guards against double-close.
-	reexec := make(chan struct{})
-	var reexecOnce sync.Once
-	var reexecPath string
-	requestReexec := func(path string) {
-		reexecOnce.Do(func() {
-			reexecPath = path
-			close(reexec)
-		})
-	}
-	if updateMonitor != nil {
-		go func() {
-			for event := range updateMonitor.Run(ctx) {
-				if event.Err != nil {
-					log.Printf("self-update: %v", event.Err)
-				} else if event.Result.Latest == "" {
-					log.Printf("self-update: no releases found; current %s", event.Result.Current)
-				} else if event.Result.Applied {
-					log.Printf("self-update: installed release %s over current %s; draining and re-executing", event.Result.Latest, event.Result.Current)
-					requestReexec(event.ReexecPath)
-				} else {
-					log.Printf("self-update: latest release %s, current %s; no update", event.Result.Latest, event.Result.Current)
-				}
-			}
-		}()
-	}
-
 	var pollLoops sync.WaitGroup
 	for _, schedule := range pollSchedules {
 		schedule := schedule
@@ -190,30 +161,19 @@ func main() {
 			loop.Run(ctx)
 		}()
 	}
-	loopDone := make(chan struct{})
+	pollsDone := make(chan struct{})
 	go func() {
 		pollLoops.Wait()
-		close(loopDone)
-	}()
-
-	// A self-update applies by triggering the same graceful shutdown a signal
-	// does: stop() cancels ctx, the poll loops drain their in-flight polls, the
-	// server shuts down, then main re-execs. Without reexec this goroutine is
-	// inert; a SIGTERM cancels ctx through signal.NotifyContext instead.
-	go func() {
-		select {
-		case <-reexec:
-			stop()
-		case <-ctx.Done():
-		}
+		close(pollsDone)
 	}()
 
 	server := &http.Server{
 		Addr:    *addr,
 		Handler: rfs.NewHTTPHandler(store, registeredSources, buildInfo),
 	}
-
+	serverDone := make(chan struct{})
 	go func() {
+		defer close(serverDone)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -222,24 +182,41 @@ func main() {
 		}
 	}()
 
+	// Signals cancel ctx directly. An applied self-update enters the same path
+	// through transition.RequestReexec. Wait joins both completion signals before
+	// main performs the explicit re-exec effect below.
+	transition := newProcessTransition(stop, pollsDone, serverDone)
+	if updateMonitor != nil {
+		go func() {
+			for event := range updateMonitor.Run(ctx) {
+				if event.Err != nil {
+					log.Printf("self-update: %v", event.Err)
+				} else if event.Result.Latest == "" {
+					log.Printf("self-update: no releases found; current %s", event.Result.Current)
+				} else if event.Result.Applied {
+					log.Printf("self-update: installed release %s over current %s; draining and re-executing", event.Result.Latest, event.Result.Current)
+					transition.RequestReexec(event.ReexecPath)
+				} else {
+					log.Printf("self-update: latest release %s, current %s; no update", event.Result.Latest, event.Result.Current)
+				}
+			}
+		}()
+	}
+
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("serve: %v", err)
 	}
 
-	<-loopDone // wait for all poll loops to drain before the process exits
-
-	// If a self-update was applied, the new binary is on disk at reexecPath
-	// (captured before the swap); replace this process image with it in place
-	// (same PID, no restart).
-	select {
-	case <-reexec:
+	reexecPath, reexecute := transition.Wait()
+	if reexecute {
+		// FileSwapper captured this install path before renaming the running
+		// executable; on Linux os.Executable points at the .bak after the swap.
 		if reexecPath == "" {
 			log.Fatalf("self-update: missing re-exec path")
 		}
 		if err := syscall.Exec(reexecPath, os.Args, os.Environ()); err != nil {
 			log.Fatalf("self-update: re-exec %s: %v", reexecPath, err)
 		}
-	default:
 	}
 }
 

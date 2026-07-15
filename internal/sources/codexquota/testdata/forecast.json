@@ -1,0 +1,75 @@
+{
+  "fetchedAt": "2026-07-15T16:22:41.123Z",
+  "forecast": {
+    "score": 89,
+    "resetAnnounced": false
+  },
+  "history": [
+    {
+      "at": "2026-07-15T05:59:46.000Z",
+      "fromScore": 3,
+      "scoreDelta": 86,
+      "toScore": 89,
+      "changes": [
+        {
+          "delta": 77,
+          "from": 0,
+          "label": "LLM tweet-context judgment",
+          "to": 77
+        },
+        {
+          "delta": 14,
+          "from": 0,
+          "label": "OpenAI team vagueposting",
+          "to": 14
+        }
+      ]
+    },
+    {
+      "at": "2026-07-14T19:34:54.000Z",
+      "fromScore": 95,
+      "scoreDelta": -92,
+      "toScore": 3,
+      "changes": [
+        {
+          "delta": -92,
+          "from": 95,
+          "label": "confirmed reset",
+          "to": 3
+        }
+      ]
+    },
+    {
+      "at": "2026-07-13T14:35:47.000Z",
+      "fromScore": 41,
+      "scoreDelta": -4,
+      "toScore": 37,
+      "changes": []
+    }
+  ],
+  "tiboPosts": [
+    {
+      "guid": "2077114635308986427",
+      "link": "https://x.com/thsottiaux/status/2077114635308986427",
+      "pubDate": "2026-07-14T19:34:54.000Z",
+      "title": "We are once again resetting the usage limits for all.",
+      "tweetAssessment": {
+        "category": "reset_completed",
+        "guid": "2077114635308986427",
+        "reason": "Explicit completed Codex quota-reset post.",
+        "resetSignalStrength": 75
+      }
+    },
+    {
+      "guid": "2077271889626706300",
+      "link": "https://x.com/thsottiaux/status/2077271889626706300",
+      "pubDate": "2026-07-15T05:59:46.000Z",
+      "title": "Should we reset the ChatGPT Work and Codex usage again?",
+      "tweetAssessment": {
+        "category": "reset_proposal",
+        "reason": "A proposal, not an announcement.",
+        "resetSignalStrength": 58
+      }
+    }
+  ]
+}

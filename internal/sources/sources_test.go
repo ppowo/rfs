@@ -2,13 +2,42 @@ package sources_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ppowo/rfs/internal/sources"
+	"github.com/ppowo/rfs/internal/sources/codexquota"
 	"github.com/ppowo/rfs/internal/sources/film"
 	"github.com/ppowo/rfs/internal/sources/ptg"
 	"github.com/ppowo/rfs/internal/sources/tildes"
 )
 
+func TestAllIncludesCodexQuotaResetSource(t *testing.T) {
+	var found bool
+	for _, source := range sources.All() {
+		if source.ID != "codex-quota-reset" {
+			continue
+		}
+		found = true
+		if source.URL != codexquota.ForecastURL {
+			t.Fatalf("codex quota source URL = %q, want %q", source.URL, codexquota.ForecastURL)
+		}
+		if source.Meta.Title != "Will Codex Reset? alerts" {
+			t.Fatalf("codex quota source title = %q", source.Meta.Title)
+		}
+		if source.Meta.Link != codexquota.PageURL {
+			t.Fatalf("codex quota source link = %q, want %q", source.Meta.Link, codexquota.PageURL)
+		}
+		if source.Interval != 30*time.Minute {
+			t.Fatalf("codex quota source interval = %s, want 30m", source.Interval)
+		}
+		if source.Flow.Version() != codexquota.ExtractVersion {
+			t.Fatalf("codex quota source flow version = %d, want %d", source.Flow.Version(), codexquota.ExtractVersion)
+		}
+	}
+	if !found {
+		t.Fatal("sources.All does not include the codex-quota-reset source")
+	}
+}
 func TestAllIncludesPTGSource(t *testing.T) {
 	var found bool
 	for _, source := range sources.All() {

@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
 type FetchCache struct {
@@ -32,7 +30,7 @@ const (
 
 type FetchResult struct {
 	Status     FetchStatus
-	Document   *html.Node
+	Page       Page
 	Cache      FetchCache
 	RetryAfter time.Duration
 }
@@ -77,12 +75,12 @@ func (f HTTPFetcher) Fetch(ctx context.Context, url string, cache FetchCache) (F
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		doc, err := parseHTML(resp.Body)
+		body, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return FetchResult{}, err
 		}
 		result.Status = FetchModified
-		result.Document = doc
+		result.Page = Page(body)
 		return result, nil
 	case http.StatusNotModified:
 		result.Status = FetchNotModified
@@ -95,10 +93,6 @@ func (f HTTPFetcher) Fetch(ctx context.Context, url string, cache FetchCache) (F
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 		return FetchResult{}, fmt.Errorf("fetch %s: unexpected status %s", url, resp.Status)
 	}
-}
-
-func parseHTML(r io.Reader) (*html.Node, error) {
-	return html.Parse(r)
 }
 
 func parseRetryAfter(value string, now time.Time) time.Duration {

@@ -1,6 +1,7 @@
 package meltzer
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -26,7 +27,12 @@ type Flow struct{}
 // Version reports the Meltzer extraction version.
 func (Flow) Version() int { return ExtractVersion }
 
-func (Flow) Extract(doc *html.Node) ([]rfs.ExtractedItem, error) {
+func (Flow) Extract(page rfs.Page) ([]rfs.ExtractedItem, error) {
+	doc, err := rfs.ParseHTML(page)
+	if err != nil {
+		return nil, fmt.Errorf("meltzer: parse page: %w", err)
+	}
+
 	var items []rfs.ExtractedItem
 
 	// Walk the document in order, remembering the most recent heading so each

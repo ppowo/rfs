@@ -2,6 +2,7 @@ package film
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -38,9 +39,10 @@ func (Flow) Version() int { return ExtractVersion }
 // superseded — filled up or archived). The live thread is the one with the
 // newest pubDate, found by date rather than search-result position so the
 // rule holds regardless of how 4plebs orders the page.
-func (Flow) Extract(doc *html.Node) ([]rfs.ExtractedItem, error) {
-	if doc == nil {
-		return nil, errors.New("film: missing document")
+func (Flow) Extract(page rfs.Page) ([]rfs.ExtractedItem, error) {
+	doc, err := rfs.ParseHTML(page)
+	if err != nil {
+		return nil, fmt.Errorf("film: parse page: %w", err)
 	}
 
 	var items []rfs.ExtractedItem

@@ -8,6 +8,8 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/ppowo/rfs/internal/rfs"
+
 	"github.com/ppowo/rfs/internal/sources/meltzer"
 )
 
@@ -202,17 +204,21 @@ func TestFlowParsesEvery2020sFixtureRow(t *testing.T) {
 	}
 }
 
-func parseHTML(t *testing.T, body string) *html.Node {
+func parseHTML(t *testing.T, body string) rfs.Page {
 	t.Helper()
-	doc, err := html.Parse(strings.NewReader(body))
-	if err != nil {
+	page := rfs.Page(body)
+	if _, err := rfs.ParseHTML(page); err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	return doc
+	return page
 }
 
-func countDataRows(t *testing.T, doc *html.Node) int {
+func countDataRows(t *testing.T, page rfs.Page) int {
 	t.Helper()
+	doc, err := rfs.ParseHTML(page)
+	if err != nil {
+		t.Fatalf("parse fixture for row count: %v", err)
+	}
 	table := firstTable(doc)
 	if table == nil {
 		t.Fatal("fixture has no table element")

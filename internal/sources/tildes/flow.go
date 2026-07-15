@@ -2,6 +2,7 @@ package tildes
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -35,9 +36,10 @@ func (Flow) Version() int { return ExtractVersion }
 // Listing membership alone defines the Source's current Items: topic age and
 // position do not suppress an Item, while a topic that leaves the trailing-year
 // listing naturally leaves the feed.
-func (Flow) Extract(doc *html.Node) ([]rfs.ExtractedItem, error) {
-	if doc == nil {
-		return nil, errors.New("tildes: missing document")
+func (Flow) Extract(page rfs.Page) ([]rfs.ExtractedItem, error) {
+	doc, err := rfs.ParseHTML(page)
+	if err != nil {
+		return nil, fmt.Errorf("tildes: parse page: %w", err)
 	}
 
 	listing := findElementByClass(doc, "topic-listing")

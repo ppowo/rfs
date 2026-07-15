@@ -24,6 +24,30 @@ func shouldEnableSelfUpdate(buildVersion string, flagEnabled bool) bool {
 	return flagEnabled && buildVersion != "dev"
 }
 
+type pollSchedule struct {
+	interval time.Duration
+	sources  []rfs.Source
+}
+
+func buildPollSchedules(sources []rfs.Source, defaultInterval time.Duration) []pollSchedule {
+	schedules := make([]pollSchedule, 0)
+	byInterval := make(map[time.Duration]int)
+	for _, source := range sources {
+		interval := source.Interval
+		if interval <= 0 {
+			interval = defaultInterval
+		}
+		index, exists := byInterval[interval]
+		if !exists {
+			index = len(schedules)
+			byInterval[interval] = index
+			schedules = append(schedules, pollSchedule{interval: interval})
+		}
+		schedules[index].sources = append(schedules[index].sources, source)
+	}
+	return schedules
+}
+
 func pollCycleDetails(sources []rfs.Source) string {
 	sourceDetail := fmt.Sprintf("%d source polls", len(sources))
 	if len(sources) == 1 {
@@ -43,7 +67,7 @@ func logNextPollCycle(started time.Time, interval time.Duration, sources []rfs.S
 
 func main() {
 	addr := flag.String("addr", ":14298", "HTTP listen address")
-	interval := flag.Duration("interval", time.Hour, "global source polling interval")
+	interval := flag.Duration("interval", time.Hour, "default source polling interval")
 	domainSpacing := flag.Duration("domain-spacing", 10*time.Second, "minimum spacing between requests to the same domain")
 	dbPath := flag.String("db", "", "SQLite database path; defaults to the OS user cache dir, or use :memory:")
 	showVersion := flag.Bool("version", false, "print build version and exit")
@@ -80,6 +104,7 @@ func main() {
 	defer store.Close()
 
 	registeredSources := sources.All()
+	pollSchedules := buildPollSchedules(registeredSources, *interval)
 	poller := rfs.Poller{
 		Fetcher: rfs.NewHTTPFetcher(nil),
 		Store:   store,
@@ -115,7 +140,9 @@ func main() {
 
 	log.Printf("serving feeds on %s", *addr)
 	logFeeds(*addr, registeredSources)
-	log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", *interval, pollCycleDetails(registeredSources))
+	for _, schedule := range pollSchedules {
+		log.Printf("poll schedule: first cycle starts immediately, then every %s (%s)", schedule.interval, pollCycleDetails(schedule.sources))
+	}
 
 	// reexec is closed when a self-update is applied, signalling main to drain
 	// (via stop(), the same path a SIGTERM takes) and then syscall.Exec the
@@ -146,22 +173,31 @@ func main() {
 		}()
 	}
 
-	loop := rfs.Loop{
-		Poll: func(ctx context.Context) {
-			started := time.Now()
-			pollAll(ctx, registeredSources, poller, gate)
-			logNextPollCycle(started, *interval, registeredSources)
-		},
-		Interval: *interval,
+	var pollLoops sync.WaitGroup
+	for _, schedule := range pollSchedules {
+		schedule := schedule
+		pollLoops.Add(1)
+		go func() {
+			defer pollLoops.Done()
+			loop := rfs.Loop{
+				Poll: func(ctx context.Context) {
+					started := time.Now()
+					pollAll(ctx, schedule.sources, poller, gate)
+					logNextPollCycle(started, schedule.interval, schedule.sources)
+				},
+				Interval: schedule.interval,
+			}
+			loop.Run(ctx)
+		}()
 	}
 	loopDone := make(chan struct{})
 	go func() {
-		loop.Run(ctx)
+		pollLoops.Wait()
 		close(loopDone)
 	}()
 
 	// A self-update applies by triggering the same graceful shutdown a signal
-	// does: stop() cancels ctx, the loop drains its in-flight poll, the
+	// does: stop() cancels ctx, the poll loops drain their in-flight polls, the
 	// server shuts down, then main re-execs. Without reexec this goroutine is
 	// inert; a SIGTERM cancels ctx through signal.NotifyContext instead.
 	go func() {
@@ -190,7 +226,7 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 
-	<-loopDone // wait for the poll loop to drain before the process exits
+	<-loopDone // wait for all poll loops to drain before the process exits
 
 	// If a self-update was applied, the new binary is on disk at reexecPath
 	// (captured before the swap); replace this process image with it in place

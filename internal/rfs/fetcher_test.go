@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func TestHTTPFetcherFetchesModifiedHTMLAndCachesValidators(t *testing.T) {
+func TestHTTPFetcherFetchesModifiedPageAndCachesValidators(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"v1"`)
 		w.Header().Set("Last-Modified", "Wed, 07 Apr 1982 00:00:00 GMT")
@@ -24,8 +24,8 @@ func TestHTTPFetcherFetchesModifiedHTMLAndCachesValidators(t *testing.T) {
 	if result.Status != FetchModified {
 		t.Fatalf("expected modified status, got %v", result.Status)
 	}
-	if result.Document == nil {
-		t.Fatal("expected parsed HTML document")
+	if got := string(result.Page); got != `<html><body><p>Hello</p></body></html>` {
+		t.Fatalf("unexpected fetched page: %q", got)
 	}
 	if result.Cache.ETag != `"v1"` {
 		t.Fatalf("unexpected ETag: %q", result.Cache.ETag)
@@ -58,8 +58,8 @@ func TestHTTPFetcherUsesConditionalHeadersAndReportsNotModified(t *testing.T) {
 	if result.Status != FetchNotModified {
 		t.Fatalf("expected not-modified status, got %v", result.Status)
 	}
-	if result.Document != nil {
-		t.Fatal("expected no document for 304")
+	if result.Page != nil {
+		t.Fatal("expected no page for 304")
 	}
 }
 

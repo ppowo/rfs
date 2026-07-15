@@ -8,6 +8,8 @@ import (
 
 	"golang.org/x/net/html"
 
+	"github.com/ppowo/rfs/internal/rfs"
+
 	"github.com/ppowo/rfs/internal/sources/tildes"
 )
 
@@ -319,17 +321,21 @@ func TestFlowParsesEveryTopicOnRealListing(t *testing.T) {
 	}
 }
 
-func parseHTML(t *testing.T, body string) *html.Node {
+func parseHTML(t *testing.T, body string) rfs.Page {
 	t.Helper()
-	doc, err := html.Parse(strings.NewReader(body))
-	if err != nil {
+	page := rfs.Page(body)
+	if _, err := rfs.ParseHTML(page); err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	return doc
+	return page
 }
 
-func countTopicArticles(t *testing.T, doc *html.Node) int {
+func countTopicArticles(t *testing.T, page rfs.Page) int {
 	t.Helper()
+	doc, err := rfs.ParseHTML(page)
+	if err != nil {
+		t.Fatalf("parse fixture for topic count: %v", err)
+	}
 	count := 0
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {

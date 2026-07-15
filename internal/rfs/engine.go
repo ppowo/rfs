@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
-type DocumentFetcher interface {
+type PageFetcher interface {
 	Fetch(context.Context, string, FetchCache) (FetchResult, error)
 }
 
@@ -24,7 +22,7 @@ type Clock interface {
 }
 
 type Poller struct {
-	Fetcher DocumentFetcher
+	Fetcher PageFetcher
 	Store   SnapshotStore
 	Clock   Clock
 }
@@ -58,7 +56,7 @@ func (p Poller) Poll(ctx context.Context, source Source) (PollResult, error) {
 		return PollResult{}, err
 	}
 
-	// A snapshot is derived data: a function of (page HTML, extraction code).
+	// A snapshot is derived data: a function of (page bytes, extraction code).
 	// An HTTP 304 only proves the page bytes are unchanged — not that the
 	// parser is. When the running Flow's version differs from the version that
 	// produced the stored snapshot, drop the conditional headers for this one
@@ -88,14 +86,14 @@ func (p Poller) Poll(ctx context.Context, source Source) (PollResult, error) {
 	case FetchThrottled:
 		return PollResult{Status: PollThrottled, RetryAfter: fetchResult.RetryAfter}, nil
 	case FetchModified:
-		if fetchResult.Document == nil {
-			return PollResult{}, fmt.Errorf("poll %s: modified fetch returned no document", source.ID)
+		if fetchResult.Page == nil {
+			return PollResult{}, fmt.Errorf("poll %s: modified fetch returned no page", source.ID)
 		}
 	default:
 		return PollResult{}, fmt.Errorf("poll %s: unknown fetch status %d", source.ID, fetchResult.Status)
 	}
 
-	extracted, err := source.Flow.Extract(fetchResult.Document)
+	extracted, err := source.Flow.Extract(fetchResult.Page)
 	if err != nil {
 		return PollResult{}, err
 	}
@@ -150,9 +148,9 @@ func (p Poller) now() time.Time {
 
 var _ Flow = flowFunc(nil)
 
-type flowFunc func(*html.Node) ([]ExtractedItem, error)
+type flowFunc func(Page) ([]ExtractedItem, error)
 
-func (f flowFunc) Extract(doc *html.Node) ([]ExtractedItem, error) { return f(doc) }
+func (f flowFunc) Extract(page Page) ([]ExtractedItem, error) { return f(page) }
 
 // Version is 0 for ad-hoc flowFuncs, so they never trigger a version-driven
 // re-derive. Named Flows declare their own version (see meltzer.Flow).

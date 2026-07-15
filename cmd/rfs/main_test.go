@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ppowo/rfs/internal/rfs"
 )
@@ -36,5 +37,39 @@ func TestPollCycleDetails(t *testing.T) {
 	}
 	if got := pollCycleDetails(nil); got != "0 source polls" {
 		t.Fatalf("pollCycleDetails(no sources) = %q", got)
+	}
+}
+
+func TestBuildPollSchedulesHonorsSourceIntervals(t *testing.T) {
+	defaultInterval := time.Hour
+	sources := []rfs.Source{
+		{ID: "default-a"},
+		{ID: "codex", Interval: 30 * time.Minute},
+		{ID: "default-b"},
+	}
+
+	schedules := buildPollSchedules(sources, defaultInterval)
+	got := make(map[string]time.Duration)
+	for _, schedule := range schedules {
+		for _, source := range schedule.sources {
+			if _, duplicate := got[source.ID]; duplicate {
+				t.Fatalf("source %q appears in more than one poll schedule", source.ID)
+			}
+			got[source.ID] = schedule.interval
+		}
+	}
+
+	want := map[string]time.Duration{
+		"default-a": time.Hour,
+		"codex":     30 * time.Minute,
+		"default-b": time.Hour,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("scheduled %d sources, want %d", len(got), len(want))
+	}
+	for sourceID, wantInterval := range want {
+		if got[sourceID] != wantInterval {
+			t.Errorf("source %q interval = %s, want %s", sourceID, got[sourceID], wantInterval)
+		}
 	}
 }

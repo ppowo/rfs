@@ -1,10 +1,6 @@
 package rfs
 
-import (
-	"time"
-
-	"golang.org/x/net/html"
-)
+import "time"
 
 // SourceMeta describes the RSS channel served for a Source.
 type SourceMeta struct {
@@ -13,11 +9,15 @@ type SourceMeta struct {
 	Link        string
 }
 
-// Flow extracts source-specific items from a fetched HTML page.
-type Flow interface {
-	Extract(*html.Node) ([]ExtractedItem, error)
+// Page is the response body fetched for a Source. A Flow decides how to decode
+// it; HTML and JSON are both source-specific representations.
+type Page []byte
 
-	// Version is bumped whenever Extract's output can change for a fixed page.
+// Flow extracts source-specific items from a fetched Page.
+type Flow interface {
+	Extract(Page) ([]ExtractedItem, error)
+
+	// Version is bumped whenever Extract's output can change for a fixed Page.
 	// rfs persists the version that produced each stored snapshot and, on a
 	// mismatch, forces a full re-fetch+re-extraction rather than trusting an
 	// HTTP 304 (which only proves the page bytes are unchanged, not that the
@@ -25,12 +25,14 @@ type Flow interface {
 	Version() int
 }
 
-// Source wires a hardcoded web page to the Flow and metadata used to serve it.
+// Source wires a hardcoded upstream resource to the Flow and feed metadata.
 type Source struct {
-	ID       string
-	URL      string
-	Meta     SourceMeta
-	Flow     Flow
+	ID   string
+	URL  string
+	Meta SourceMeta
+	Flow Flow
+
+	// Interval overrides the process's default poll interval when positive.
 	Interval time.Duration
 }
 

@@ -2,11 +2,8 @@ package rfs
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
 func TestPollerStoresExtractedSnapshotAndAppliesFirstSeenFallback(t *testing.T) {
@@ -19,7 +16,7 @@ func TestPollerStoresExtractedSnapshotAndAppliesFirstSeenFallback(t *testing.T) 
 
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	sourceDate := time.Date(1982, 4, 7, 0, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{result: FetchResult{Status: FetchModified, Document: emptyDoc(t), Cache: FetchCache{ETag: `"v1"`}}}
+	fetcher := &fakeFetcher{result: FetchResult{Status: FetchModified, Page: emptyPage(), Cache: FetchCache{ETag: `"v1"`}}}
 	flow := &fakeFlow{items: []ExtractedItem{
 		{GUID: "with-source-date", Title: "With source date", Link: "https://example.com/a", PubDate: &sourceDate},
 		{GUID: "needs-first-seen", Title: "Needs first seen", Link: "https://example.com/b"},
@@ -73,7 +70,7 @@ func TestPollerDeduplicatesExtractedGUIDsBeforeSavingSnapshot(t *testing.T) {
 	defer store.Close()
 
 	pubDate := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
-	fetcher := &fakeFetcher{result: FetchResult{Status: FetchModified, Document: emptyDoc(t)}}
+	fetcher := &fakeFetcher{result: FetchResult{Status: FetchModified, Page: emptyPage()}}
 	flow := &fakeFlow{items: []ExtractedItem{
 		{GUID: "duplicate", Title: "First", Link: "https://example.com/a", PubDate: &pubDate},
 		{GUID: "duplicate", Title: "Second", Link: "https://example.com/b", PubDate: &pubDate},
@@ -140,7 +137,7 @@ type fakeFlow struct {
 	version int
 }
 
-func (f *fakeFlow) Extract(doc *html.Node) ([]ExtractedItem, error) {
+func (f *fakeFlow) Extract(page Page) ([]ExtractedItem, error) {
 	f.called = true
 	return f.items, nil
 }
@@ -166,9 +163,9 @@ func TestPollerForcesUnconditionalFetchWhenFlowVersionAdvances(t *testing.T) {
 	}
 	now := time.Date(2026, 7, 6, 12, 0, 0, 0, time.UTC)
 	fetcher := &fakeFetcher{result: FetchResult{
-		Status:   FetchModified,
-		Document: emptyDoc(t),
-		Cache:    FetchCache{ETag: `"v2"`},
+		Status: FetchModified,
+		Page:   emptyPage(),
+		Cache:  FetchCache{ETag: `"v2"`},
 	}}
 	flow := &fakeFlow{
 		items:   []ExtractedItem{{GUID: "g", Title: "T", Link: "https://example.com", PubDate: &now}},
@@ -237,11 +234,6 @@ func TestPollerKeepsConditionalFetchWhenFlowVersionMatches(t *testing.T) {
 		t.Fatalf("extract version clobbered to 0 by a 304 with no version header: %#v", cache)
 	}
 }
-func emptyDoc(t *testing.T) *html.Node {
-	t.Helper()
-	doc, err := html.Parse(strings.NewReader(`<html><body></body></html>`))
-	if err != nil {
-		t.Fatalf("parse empty doc: %v", err)
-	}
-	return doc
+func emptyPage() Page {
+	return Page(`<html><body></body></html>`)
 }

@@ -1,12 +1,10 @@
 package ptg_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
-	"golang.org/x/net/html"
-
+	"github.com/ppowo/rfs/internal/rfs"
 	"github.com/ppowo/rfs/internal/sources/ptg"
 )
 
@@ -87,11 +85,11 @@ func TestFlowRejectsPageWithoutValidOpeningPosts(t *testing.T) {
 	}
 }
 
-func parseHTML(t *testing.T, body string) *html.Node {
+func parseHTML(t *testing.T, body string) rfs.Page {
 	t.Helper()
-	doc, err := html.Parse(strings.NewReader(body))
-	if err != nil {
+	page := rfs.Page(body)
+	if _, err := rfs.ParseHTML(page); err != nil {
 		t.Fatalf("parse fixture: %v", err)
 	}
-	return doc
+	return page
 }

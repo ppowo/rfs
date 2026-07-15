@@ -112,6 +112,37 @@ func TestFlowOnlyAlertsWhenLikelihoodCrossesThreshold(t *testing.T) {
 	}
 }
 
+func TestFlowExtractsConfirmedResetFromHistoryWithoutPostAssessment(t *testing.T) {
+	page, err := os.ReadFile("testdata/confirmed-reset-history.json")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	items, err := (codexquota.Flow{}).Extract(rfs.Page(page))
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+
+	reset := items[0]
+	if reset.GUID != "codex-quota-reset:reset:2077114635308986427" {
+		t.Errorf("GUID = %q", reset.GUID)
+	}
+	if reset.Title != "Codex quota reset confirmed" {
+		t.Errorf("title = %q", reset.Title)
+	}
+	if reset.Link != "https://x.com/thsottiaux/status/2077114635308986427" {
+		t.Errorf("link = %q", reset.Link)
+	}
+	wantDescription := "We are once again resetting the usage limits for all.\n\nWhy it counted: Explicit completed Codex quota-reset post."
+	if reset.Description != wantDescription {
+		t.Errorf("description = %q, want %q", reset.Description, wantDescription)
+	}
+	assertDate(t, reset.PubDate, "2026-07-14T19:34:54Z")
+}
+
 func TestFlowRejectsUnusableForecasts(t *testing.T) {
 	tests := []struct {
 		name    string

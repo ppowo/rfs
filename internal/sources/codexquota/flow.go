@@ -14,7 +14,7 @@ import (
 const (
 	PageURL        = "https://www.willcodexquotareset.com/"
 	ForecastURL    = PageURL + "api/forecast"
-	ExtractVersion = 1
+	ExtractVersion = 2
 
 	likelihoodThreshold = 70
 )
@@ -50,6 +50,19 @@ func (Flow) Extract(page rfs.Page) ([]rfs.ExtractedItem, error) {
 		}
 		fromScore := *event.FromScore
 		toScore := *event.ToScore
+
+		// Current responses expose completed resets in history changes; older
+		// responses also classified the matching post via tweetAssessment.
+		resetItem, confirmed, err := confirmedResetItem(event, response.TiboPosts)
+		if err != nil {
+			return nil, fmt.Errorf("codex quota: history[%d] reset event: %w", index, err)
+		}
+		if confirmed {
+			if _, exists := seenGUIDs[resetItem.GUID]; !exists {
+				seenGUIDs[resetItem.GUID] = struct{}{}
+				items = append(items, resetItem)
+			}
+		}
 		if fromScore >= likelihoodThreshold || toScore < likelihoodThreshold {
 			continue
 		}
@@ -96,7 +109,7 @@ func (Flow) Extract(page rfs.Page) ([]rfs.ExtractedItem, error) {
 			GUID:        guid,
 			Title:       title,
 			Link:        link,
-			Description: resetDescription(post),
+			Description: resetDescription(post.Title, post.TweetAssessment.Reason),
 			PubDate:     timePointer(published),
 		})
 	}
@@ -123,6 +136,76 @@ func likelihoodDescription(event historyEntry, fromScore, toScore int) string {
 	return description
 }
 
+func confirmedResetItem(event historyEntry, posts []tiboPost) (rfs.ExtractedItem, bool, error) {
+	var resetChange *scoreChange
+	for index := range event.Changes {
+		if strings.EqualFold(strings.TrimSpace(event.Changes[index].Label), "confirmed reset") {
+			resetChange = &event.Changes[index]
+			break
+		}
+	}
+	if resetChange == nil {
+		return rfs.ExtractedItem{}, false, nil
+	}
+
+	published, err := parseDate(event.At)
+	if err != nil {
+		return rfs.ExtractedItem{}, false, err
+	}
+
+	var link, postText, reason string
+	for _, detail := range resetChange.Details {
+		switch {
+		case strings.EqualFold(strings.TrimSpace(detail.Action), "source post"):
+			link = strings.TrimSpace(detail.URL)
+			postText = strings.TrimSpace(detail.Name)
+		case strings.EqualFold(strings.TrimSpace(detail.Action), "why it counted"):
+			reason = strings.TrimSpace(detail.Name)
+		}
+	}
+
+	post := findMatchingPost(posts, link, published)
+	if link == "" {
+		link = strings.TrimSpace(post.Link)
+	}
+	if link == "" {
+		link = PageURL
+	}
+	if postText == "" {
+		postText = strings.TrimSpace(post.Title)
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(post.TweetAssessment.Reason)
+	}
+
+	identity := strings.TrimSpace(post.GUID)
+	if identity == "" {
+		identity = published.Format(time.RFC3339Nano)
+	}
+	return rfs.ExtractedItem{
+		GUID:        "codex-quota-reset:reset:" + identity,
+		Title:       "Codex quota reset confirmed",
+		Link:        link,
+		Description: resetDescription(postText, reason),
+		PubDate:     timePointer(published),
+	}, true, nil
+}
+
+func findMatchingPost(posts []tiboPost, link string, published time.Time) tiboPost {
+	for _, post := range posts {
+		if link != "" && strings.TrimSpace(post.Link) == link {
+			return post
+		}
+	}
+	for _, post := range posts {
+		postDate, err := parseDate(post.PubDate)
+		if err == nil && postDate.Equal(published) {
+			return post
+		}
+	}
+	return tiboPost{}
+}
+
 func resetAlertTitle(category string) (string, bool) {
 	switch category {
 	case "reset_announced":
@@ -134,12 +217,12 @@ func resetAlertTitle(category string) (string, bool) {
 	}
 }
 
-func resetDescription(post tiboPost) string {
+func resetDescription(postText, reason string) string {
 	parts := make([]string, 0, 2)
-	if text := strings.TrimSpace(post.Title); text != "" {
-		parts = append(parts, text)
+	if postText = strings.TrimSpace(postText); postText != "" {
+		parts = append(parts, postText)
 	}
-	if reason := strings.TrimSpace(post.TweetAssessment.Reason); reason != "" {
+	if reason = strings.TrimSpace(reason); reason != "" {
 		parts = append(parts, "Why it counted: "+reason)
 	}
 	if len(parts) == 0 {
@@ -175,8 +258,15 @@ type historyEntry struct {
 }
 
 type scoreChange struct {
-	Delta int    `json:"delta"`
-	Label string `json:"label"`
+	Delta   int                 `json:"delta"`
+	Label   string              `json:"label"`
+	Details []scoreChangeDetail `json:"details"`
+}
+
+type scoreChangeDetail struct {
+	Action string `json:"action"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
 }
 
 type tiboPost struct {

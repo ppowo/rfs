@@ -8,11 +8,9 @@ rfs watches a set of hardcoded web resources and serves each one as its own RSS 
 go run ./cmd/rfs
 ```
 
-By default the server listens on `:14298` and Sources poll every hour unless they declare a source-specific interval. The Codex quota Source polls every 30 minutes. Feeds are served at:
+By default the server listens on `:14298` and Sources poll every hour unless they declare a source-specific interval. Feeds are served at:
 
 - `/` — HTML index listing every source
-- `/feeds/codex-quota-reset.xml` — alerts when reset likelihood reaches 70% or a reset is announced
-- `/feeds/codex-quota-reset.html` — HTML view of the Codex quota alerts
 - `/feeds/meltzer-5-star-matches.xml` — RSS 2.0 feed
 - `/feeds/meltzer-5-star-matches.html` — HTML view of the feed
 - `/feeds/ptg.xml` — latest Desuarchive `/ptg/` threads

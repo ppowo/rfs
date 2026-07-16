@@ -1,10 +1,7 @@
 package sources
 
 import (
-	"time"
-
 	"github.com/ppowo/rfs/internal/rfs"
-	"github.com/ppowo/rfs/internal/sources/codexquota"
 	"github.com/ppowo/rfs/internal/sources/film"
 	"github.com/ppowo/rfs/internal/sources/meltzer"
 	"github.com/ppowo/rfs/internal/sources/ptg"
@@ -13,17 +10,6 @@ import (
 
 func All() []rfs.Source {
 	return []rfs.Source{
-		{
-			ID:  "codex-quota-reset",
-			URL: codexquota.ForecastURL,
-			Meta: rfs.SourceMeta{
-				Title:       "Will Codex Reset? alerts",
-				Description: "Alerts when Codex reset likelihood reaches 70% or a quota reset is announced.",
-				Link:        codexquota.PageURL,
-			},
-			Flow:     codexquota.Flow{},
-			Interval: 30 * time.Minute,
-		},
 		{
 			ID:  "meltzer-5-star-matches",
 			URL: meltzer.PageURL,

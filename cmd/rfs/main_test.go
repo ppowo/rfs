@@ -44,7 +44,7 @@ func TestBuildPollSchedulesHonorsSourceIntervals(t *testing.T) {
 	defaultInterval := time.Hour
 	sources := []rfs.Source{
 		{ID: "default-a"},
-		{ID: "codex", Interval: 30 * time.Minute},
+		{ID: "fast-source", Interval: 30 * time.Minute},
 		{ID: "default-b"},
 	}
 
@@ -60,9 +60,9 @@ func TestBuildPollSchedulesHonorsSourceIntervals(t *testing.T) {
 	}
 
 	want := map[string]time.Duration{
-		"default-a": time.Hour,
-		"codex":     30 * time.Minute,
-		"default-b": time.Hour,
+		"default-a":   time.Hour,
+		"fast-source": 30 * time.Minute,
+		"default-b":   time.Hour,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("scheduled %d sources, want %d", len(got), len(want))
